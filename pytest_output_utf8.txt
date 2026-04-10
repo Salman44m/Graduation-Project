@@ -1,0 +1,209 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0 -- C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude
+configfile: pyproject.toml
+plugins: anyio-4.13.0, langsmith-0.7.22
+collecting ... collected 6 items
+
+tests/test_batch1_smoke.py::test_cli_passes_thread_id PASSED             [ 16%]
+tests/test_batch1_smoke.py::test_api_build_session_llms_no_global_writes PASSED [ 33%]
+tests/test_batch1_smoke.py::test_target_node_resolves_adapter_from_config PASSED [ 50%]
+tests/test_batch1_smoke.py::test_no_stale_adapter_reuse FAILED           [ 66%]
+tests/test_batch1_smoke.py::test_e2e_two_sessions_isolated PASSED        [ 83%]
+tests/test_batch2_security.py::test_api_execution_path_decoupled_from_globals FAILED [100%]
+
+================================== FAILURES ===================================
+_________________________ test_no_stale_adapter_reuse _________________________
+
+    def test_no_stale_adapter_reuse():
+        """Two calls to _build_session_llms with different configs must return
+        distinct adapter instances, proving no stale singleton reuse.
+        """
+        from api import _build_session_llms, AuditRequest
+    
+        req1 = AuditRequest(
+            objective="First session objective ù checking adapter isolation works",
+            target_model="model-alpha",
+            dry_run=True,
+        )
+        req2 = AuditRequest(
+            objective="Second session objective ù must get a fresh adapter instance",
+            target_model="model-beta",
+            dry_run=True,
+        )
+    
+>       _, adapter1 = _build_session_llms(req1)
+        ^^^^^^^^^^^
+E       ValueError: too many values to unpack (expected 2)
+
+tests\test_batch1_smoke.py:171: ValueError
+_______________ test_api_execution_path_decoupled_from_globals ________________
+
+    def test_api_execution_path_decoupled_from_globals():
+        """Security Proof: globals-must-not-be-called
+    
+        Monkeypatches all legacy global getters in `config` to raise an
+        AssertionError if called, then runs a full API audit test simulation
+        to prove that the resolver successfully reads from per-session config
+        and NEVER falls back to the legacy imports.
+        """
+        import config
+    
+        original_get_attacker = getattr(config, "get_attacker_llm", None)
+        original_get_judge = getattr(config, "get_judge_llm", None)
+        original_get_summariser = getattr(config, "get_summariser_llm", None)
+        original_get_target = getattr(config, "get_target_adapter", None)
+    
+        def poison_pill(*args, **kwargs):
+            raise AssertionError("SECURITY VIOLATION: Legacy global getter was called on API path!")
+    
+        try:
+            # Poison all global getters
+            config.get_attacker_llm = poison_pill
+            config.get_judge_llm = poison_pill
+            config.get_summariser_llm = poison_pill
+            config.get_target_adapter = poison_pill
+    
+            req = AuditRequest(
+                objective="Test objective for security proof",
+                target_model="mock-model",
+                dry_run=True,
+            )
+    
+            attacker, judge, summs, adapter = _build_session_llms(req)
+    
+            # We also need to intercept langgraph stream to not actually run the heavy graph
+            # But we want to simulate the execution resolving from config.
+            # So we'll just check that `resolve_llm` works correctly with the `__api__` flag.
+            from core.llm_resolver import resolve_llm
+    
+            # Test 1: resolver successfully pulls from config dictionary
+            test_config = {
+                "configurable": {
+                    "__api__": True,
+                    "attacker_llm": attacker,
+                    "target_adapter": adapter,
+                    "judge_llm": judge,
+                    "summariser_llm": summs,
+                }
+            }
+    
+            # This shouldn't raise the assertion error
+>           resolved_attacker = resolve_llm(test_config, "attacker_llm", "get_attacker_llm")
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_batch2_security.py:74: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+config = {'configurable': {'__api__': True, 'attacker_llm': None, 'judge_llm': None, 'summariser_llm': None, ...}}
+key = 'attacker_llm', fallback_import = 'get_attacker_llm'
+
+    def resolve_llm(
+        config: dict[str, Any] | None,
+        key: str,
+        fallback_import: str | None = None,
+    ) -> Any:
+        """Resolve an LLM instance from per-session config or legacy globals.
+    
+        Parameters
+        \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        config : dict | None
+            The LangGraph ``RunnableConfig`` dict passed to the node.
+        key : str
+            Config key, e.g. ``"attacker_llm"``, ``"judge_llm"``, ``"summariser_llm"``.
+        fallback_import : str | None
+            Name of the function to import from ``config`` module as a CLI-only
+            fallback, e.g. ``"get_attacker_llm"``.
+    
+        Returns
+        \u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        Any
+            The resolved LLM instance, or ``None`` if unavailable on the CLI path.
+    
+        Raises
+        \u2500\u2500\u2500\u2500\u2500\u2500
+        RuntimeError
+            If running on the API path (``__api__=True``) and no per-session LLM
+            was injected.  This enforces fail-closed behavior.
+        """
+        # Priority 0: per-session instance from LangGraph config
+        if config:
+            configurable = config.get("configurable", {})
+            llm = configurable.get(key)
+            if llm is not None:
+                return llm
+    
+            # Fail-closed on API path
+            if configurable.get("__api__"):
+>               raise RuntimeError(
+                    f"[FAIL-CLOSED] API execution requires per-session '{key}' "
+                    f"in config['configurable'], but none was injected.  "
+                    f"This is a session isolation violation."
+                )
+E               RuntimeError: [FAIL-CLOSED] API execution requires per-session 'attacker_llm' in config['configurable'], but none was injected.  This is a session isolation violation.
+
+core\llm_resolver.py:62: RuntimeError
+============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+core\graph.py:918
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:918: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_ANALYST,      analyst_node)
+
+core\graph.py:919
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:919: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_DECOMPOSER,   decomposer_node)
+
+core\graph.py:920
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:920: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_COMBINER,     combiner_node)
+
+core\graph.py:921
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:921: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_JUDGE,        _judge_and_score_node)
+
+core\graph.py:922
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:922: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_REMEDIATION,  patch_generator_node)
+
+core\graph.py:926
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:926: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_SCOUT,        scout_node)
+
+core\graph.py:927
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:927: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_ATTACK_SWARM, attack_swarm_node)
+
+core\graph.py:928
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:928: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_TARGET,       target_node)
+
+core\graph.py:930
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:930: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_SELF_REFEREE, self_referee_node)  # Phase 1
+
+core\graph.py:931
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:931: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_CLASSIFIER,   response_classifier_node)  # Fast 3-way pre-filter
+
+core\graph.py:933
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:933: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_GCI,          gci_node)       # Gradient Conflict Induction
+
+core\graph.py:934
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:934: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_RMCE,         rmce_node)      # Recursive Meta-Cognitive Entrapment
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_batch1_smoke.py::test_no_stale_adapter_reuse - ValueError: ...
+FAILED tests/test_batch2_security.py::test_api_execution_path_decoupled_from_globals
+================== 2 failed, 4 passed, 15 warnings in 4.94s ===================

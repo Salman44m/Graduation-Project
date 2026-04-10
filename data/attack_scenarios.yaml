@@ -1,0 +1,3 @@
+# [LEGACY — kept for backwards compat] Monolithic attack scenarios. New deployments should use data/scenarios/ sub-directory.
+# TODO: Populate this file with the appropriate configuration.
+---

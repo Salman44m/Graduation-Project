@@ -1,0 +1,3 @@
+# Environment configurations for BaseTargetAdapters: LLM API endpoints, context window limits, rate-limiting rules, retry policies, and FAISS index storage paths.
+# TODO: Populate this file with the appropriate configuration.
+---

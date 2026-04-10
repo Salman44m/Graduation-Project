@@ -1,0 +1,11 @@
+Extracted Intel for Session a606006c-8233-4443-9227-ab62ac7ac12f
+==================================================
+
+Epistemic Anchors:
+ - implementation multi-head attention
+
+RMCE Triggers:
+
+Role Inversion Corrections:
+ - accuracy. suggestions: **Precision
+ - accuracy. suggestions: **Precision

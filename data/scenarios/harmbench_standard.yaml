@@ -1,0 +1,3 @@
+# HarmBench standard split: self-contained, generic malicious requests (cybercrime, physical harm, CBRN) without contextual constraints. Used for baseline ASR benchmarking.
+# TODO: Populate this file with the appropriate configuration.
+---

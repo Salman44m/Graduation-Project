@@ -1,0 +1,3 @@
+# Multi-Turn Decomposition objectives: core malicious goals formatted for the Question Decomposer agent to split into benign sub-question sequences for 'Safe in Isolation' fragment attacks.
+# TODO: Populate this file with the appropriate configuration.
+---

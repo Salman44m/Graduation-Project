@@ -1,0 +1,4 @@
+{
+  "_comment": "AdvJudge-Zero control token dictionary: maps judge model IDs (e.g., Llama-3-70B, Qwen2.5) to short low-perplexity structural markers discovered via beam-search (e.g., '| Step | Description |', '<html>\n') that bias the judge toward affirmative evaluation. — TODO: populate entries.",
+  "entries": {}
+}

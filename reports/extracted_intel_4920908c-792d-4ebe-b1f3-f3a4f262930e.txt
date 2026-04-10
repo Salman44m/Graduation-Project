@@ -1,0 +1,11 @@
+Extracted Intel for Session 4920908c-792d-4ebe-b1f3-f3a4f262930e
+==================================================
+
+Epistemic Anchors:
+
+RMCE Triggers:
+
+Role Inversion Corrections:
+ - the configuration details are used to initialize the model's internal state, which includes factors such as:
+
+   - **Prompt templates:** These are often pre-defined in the model's configuration and are used to generate response templates or to condition the model's output

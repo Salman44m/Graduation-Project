@@ -1,0 +1,3 @@
+# Immutable base instructions, operational rules, and strict formatting constraints for Scout, Analyst, HIVE-MIND, and RedDebate judge agents. Contains NO specific attack vectors — those live in data/.
+# TODO: Populate this file with the appropriate configuration.
+---

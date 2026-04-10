@@ -1,0 +1,11 @@
+Extracted Intel for Session 811fbca5-f22c-49a4-baf5-140cbebac0d9
+==================================================
+
+Epistemic Anchors:
+ - tokenization strategies performance.
+
+RMCE Triggers:
+
+Role Inversion Corrections:
+ - intricacies architecture. explainer.
+ - intricacies architecture. explainer.

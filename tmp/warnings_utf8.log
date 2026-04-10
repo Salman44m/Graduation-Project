@@ -1,0 +1,29 @@
+INFO:faiss.loader:Loading faiss with AVX512 support.
+INFO:faiss.loader:Could not load library with AVX512 support due to:
+ModuleNotFoundError("No module named 'faiss.swigfaiss_avx512'")
+INFO:faiss.loader:Loading faiss with AVX2 support.
+INFO:faiss.loader:Successfully loaded faiss with AVX2 support.
+INFO:core.graph:[Graph] Initialising PromptEvo StateGraph…
+C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\core\graph.py:919: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+  graph.add_node(_JUDGE,        _judge_and_score_node)
+C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\core\graph.py:920: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+  graph.add_node(_REMEDIATION,  patch_generator_node)
+C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\core\graph.py:925: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+  graph.add_node(_ATTACK_SWARM, attack_swarm_node)
+C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\core\graph.py:931: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+  graph.add_node(_GCI,          gci_node)       # Gradient Conflict Induction
+C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\core\graph.py:932: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+  graph.add_node(_RMCE,         rmce_node)      # Recursive Meta-Cognitive Entrapment
+WARNING:promptevo.persistence:[Persistence] Redis unavailable (Timeout connecting to server) — falling back to in-process storage.  Sessions will NOT survive process restarts and multi-worker deployment is NOT supported in this mode.
+WARNING:promptevo.persistence:[Persistence] Using in-process MemorySaver — HITL sessions will be lost on restart.  Set REDIS_URL to enable persistent checkpointing.
+INFO:core.graph:[Graph] PromptEvo StateGraph compiled successfully.
+INFO:core.graph:[Graph] HITL breakpoint: disabled
+INFO:core.graph:[Graph] Nodes: ['__start__', 'analyst', 'decomposer', 'combiner', 'judge_and_score', 'self_play_remediation', 'reporter', 'scout', 'attack_swarm', 'target', 'hitl_review', 'self_referee', 'response_classifier', 'experience_pool', 'gci', 'rmce', '__end__']
+INFO:core.graph:[Graph] Initialising PromptEvo StateGraph…
+WARNING:promptevo.persistence:[Persistence] Using in-process MemorySaver — HITL sessions will be lost on restart.  Set REDIS_URL to enable persistent checkpointing.
+INFO:core.graph:[Graph] PromptEvo StateGraph compiled successfully.
+INFO:core.graph:[Graph] HITL breakpoint: disabled
+INFO:core.graph:[Graph] Nodes: ['__start__', 'analyst', 'decomposer', 'combiner', 'judge_and_score', 'self_play_remediation', 'reporter', 'scout', 'attack_swarm', 'target', 'hitl_review', 'self_referee', 'response_classifier', 'experience_pool', 'gci', 'rmce', '__end__']
+--- Starting Build Graph Check ---
+Success: Graph compiled.
+--- End Build Graph Check ---

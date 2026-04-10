@@ -1,0 +1,3 @@
+# [LEGACY — kept for backwards compat] Consolidated agent system prompts. New deployments should use config/agent_personas.yaml instead.
+# TODO: Populate this file with the appropriate configuration.
+---

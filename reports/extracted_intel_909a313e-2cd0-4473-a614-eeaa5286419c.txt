@@ -1,0 +1,9 @@
+Extracted Intel for Session 909a313e-2cd0-4473-a614-eeaa5286419c
+==================================================
+
+Epistemic Anchors:
+
+RMCE Triggers:
+
+Role Inversion Corrections:
+ - explanation complexities mechanics

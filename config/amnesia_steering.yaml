@@ -1,0 +1,3 @@
+# Amnesia activation-space attack hyperparameters: model-specific target decoder layers (e.g., layers 13-15 for Llama-2), scaling factors (α), and calibration set of sensitive trigger keywords for attack-vector extraction before safety features consolidate.
+# TODO: Populate this file with the appropriate configuration.
+---

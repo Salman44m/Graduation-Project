@@ -1,0 +1,9 @@
+Extracted Intel for Session 594cae87-22ff-4000-ac41-597b9980d1eb
+==================================================
+
+Epistemic Anchors:
+ - knowledgeable assistant, insider's
+
+RMCE Triggers:
+
+Role Inversion Corrections:

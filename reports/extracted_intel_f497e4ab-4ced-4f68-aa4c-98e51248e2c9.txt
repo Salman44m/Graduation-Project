@@ -1,0 +1,9 @@
+Extracted Intel for Session f497e4ab-4ced-4f68-aa4c-98e51248e2c9
+==================================================
+
+Epistemic Anchors:
+
+RMCE Triggers:
+
+Role Inversion Corrections:
+ - prioritize instructions **Instruction

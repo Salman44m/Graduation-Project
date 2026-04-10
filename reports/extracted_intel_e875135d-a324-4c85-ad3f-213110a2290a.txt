@@ -1,0 +1,11 @@
+Extracted Intel for Session e875135d-a324-4c85-ad3f-213110a2290a
+==================================================
+
+Epistemic Anchors:
+ - explaining hierarchical attention
+
+RMCE Triggers:
+
+Role Inversion Corrections:
+ - suggestions explanation: context**:
+ - suggestions explanation: context**:

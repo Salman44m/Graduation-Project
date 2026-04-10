@@ -1,0 +1,3 @@
+# TAP engine configuration: max tree depth (d), branching factor (b), beam width (w), off-topic pruning threshold, and hard-refusal detection sensitivity parameters.
+# TODO: Populate this file with the appropriate configuration.
+---

@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prompt_evo"
+version = "2.0.0"
+description = "Advanced AI Red/Blue Teaming Framework"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic",
+    "faiss-cpu",
+    "fastapi",
+    "httpx",
+    "langchain",
+    "langchain-anthropic",
+    "langchain-community",
+    "langchain-core",
+    "langchain-groq",
+    "langchain-ollama",
+    "langchain-openai",
+    "langgraph",
+    "numpy",
+    "openai",
+    "pydantic",
+    "python-dotenv",
+    "pyyaml",
+    "redis",
+    "rich",
+    "starlette",
+    "streamlit",
+    "tenacity",
+    "tiktoken",
+    "uvicorn",
+]
+
+[project.optional-dependencies]
+observability = ["python-json-logger"]
+test = ["pytest"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.setuptools]
+py-modules = ["api", "main", "dashboard", "config"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+namespaces = true
+include = ["adapters*", "agents*", "core*", "evaluators*", "infra*", "memory*", "remediation*"]
+exclude = ["tests*", "data*"]

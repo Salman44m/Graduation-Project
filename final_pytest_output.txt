@@ -1,0 +1,75 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0 -- C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude
+configfile: pyproject.toml
+plugins: anyio-4.13.0, langsmith-0.7.22
+collecting ... collected 6 items
+
+tests/test_batch1_smoke.py::test_cli_passes_thread_id PASSED             [ 16%]
+tests/test_batch1_smoke.py::test_api_build_session_llms_no_global_writes PASSED [ 33%]
+tests/test_batch1_smoke.py::test_target_node_resolves_adapter_from_config PASSED [ 50%]
+tests/test_batch1_smoke.py::test_no_stale_adapter_reuse PASSED           [ 66%]
+tests/test_batch1_smoke.py::test_e2e_two_sessions_isolated PASSED        [ 83%]
+tests/test_batch2_security.py::test_api_execution_path_decoupled_from_globals PASSED [100%]
+
+============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+core\graph.py:918
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:918: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_ANALYST,      analyst_node)
+
+core\graph.py:919
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:919: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_DECOMPOSER,   decomposer_node)
+
+core\graph.py:920
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:920: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_COMBINER,     combiner_node)
+
+core\graph.py:921
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:921: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_JUDGE,        _judge_and_score_node)
+
+core\graph.py:922
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:922: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_REMEDIATION,  patch_generator_node)
+
+core\graph.py:926
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:926: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_SCOUT,        scout_node)
+
+core\graph.py:927
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:927: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_ATTACK_SWARM, attack_swarm_node)
+
+core\graph.py:928
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:928: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_TARGET,       target_node)
+
+core\graph.py:930
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:930: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_SELF_REFEREE, self_referee_node)  # Phase 1
+
+core\graph.py:931
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:931: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_CLASSIFIER,   response_classifier_node)  # Fast 3-way pre-filter
+
+core\graph.py:933
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:933: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_GCI,          gci_node)       # Gradient Conflict Induction
+
+core\graph.py:934
+  C:\Users\Mahmoud Salman\Downloads\prompt_evo - Claude\tests\..\core\graph.py:934: UserWarning: The 'config' parameter should be typed as 'RunnableConfig' or 'RunnableConfig | None', not 'RunnableConfig | None'. 
+    graph.add_node(_RMCE,         rmce_node)      # Recursive Meta-Cognitive Entrapment
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 6 passed, 15 warnings in 4.87s ========================
