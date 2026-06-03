@@ -36,6 +36,26 @@ Optional capabilities exposed via ``capabilities`` property dict:
   • ``multimodal``     — True if the target accepts image inputs
   • ``streaming``      — True if token-level streaming is supported
   • ``system_prompt``  — True if a separate system message is supported
+
+Error-handling contract for ``invoke()``
+─────────────────────────────────────────
+``invoke()`` is the thin str-returning wrapper around ``invoke_full()``.
+Its error policy is deliberately asymmetric:
+
+  • ``AdapterAuthError``    → ALWAYS re-raised.  Auth failures represent a
+    broken deployment (bad API key, expired token, credential rotation).
+    Swallowing them silently returns an empty string and lets the session
+    continue uselessly for many expensive turns before the operator notices.
+    Raising loudly causes an immediate crash that is impossible to miss.
+
+  • ``AdapterRateLimitError``, ``AdapterTimeoutError``,
+    ``AdapterContextLengthError``, generic ``AdapterError`` → logged and
+    returned as an empty string so the judge can score 0.0 and the analyst
+    can prune / retry the branch.  These are transient or recoverable.
+
+  • ``AdapterContentFilterError`` → returned as a special sentinel string
+    ``"[CONTENT_FILTER]"`` so the judge can detect and score the refusal
+    explicitly rather than treating it as a silent empty response.
 """
 
 from __future__ import annotations
@@ -73,11 +93,33 @@ class AdapterTimeoutError(AdapterError):
 
 
 class AdapterAuthError(AdapterError):
-    """Authentication failed (invalid API key, expired token, etc.)."""
+    """Authentication failed (invalid API key, expired token, etc.).
+
+    This error is treated as a hard, non-swallowable failure.  The
+    ``invoke()`` convenience method re-raises it immediately rather than
+    returning an empty string, because:
+
+      1. A bad API key will never recover on its own — every subsequent
+         turn will fail identically, burning session budget for nothing.
+      2. Silent empty responses from auth failures are indistinguishable
+         from a model that is genuinely refusing to answer — this
+         contaminates RAHS scores and GLTM defense profiles.
+      3. Operators MUST see this failure loudly to rotate credentials.
+    """
 
 
 class AdapterContextLengthError(AdapterError):
     """The prompt exceeded the target model's context window limit."""
+
+
+class AdapterContentFilterError(AdapterError):
+    """The target's built-in content filter blocked the response.
+
+    Distinct from a refusal: the model never generated any tokens.
+    The ``invoke()`` method returns the sentinel string
+    ``\"[CONTENT_FILTER]\"`` for this error so the judge node can detect
+    and score it explicitly.
+    """
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -208,6 +250,8 @@ class BaseTargetAdapter(abc.ABC):
             API key / credential rejected by target.
         AdapterContextLengthError
             Prompt exceeded the model's context window.
+        AdapterContentFilterError
+            Response blocked by the target's built-in content filter.
         AdapterError
             Any other unrecoverable adapter-layer error.
         """
@@ -239,6 +283,21 @@ class BaseTargetAdapter(abc.ABC):
         This is the method used by all agent nodes in the graph since they
         only need the raw response string for injection into the state.
 
+        Error Policy
+        ────────────
+        • ``AdapterAuthError``         → **always re-raised**.  Auth failures
+          are deployment-breaking and must never be silently swallowed.
+          The caller (target_node) must catch this and set
+          ``attack_status = "error"`` so the graph routes to the reporter
+          and the operator sees an immediate, actionable failure.
+
+        • ``AdapterContentFilterError`` → returns the sentinel string
+          ``"[CONTENT_FILTER]"`` so the judge can explicitly score it.
+
+        • All other ``AdapterError`` subtypes (rate limit, timeout,
+          context length, generic) → logged at ERROR and returns ``""``
+          so the current branch can be scored as 0.0 and pruned.
+
         Parameters
         ──────────
         messages : list[BaseMessage]
@@ -247,12 +306,48 @@ class BaseTargetAdapter(abc.ABC):
         Returns
         ───────
         str
-            Target model's response text, or an empty string on failure.
+            Target model's response text.
+            ``"[CONTENT_FILTER]"`` if the request was blocked by the target's
+            content filter.
+            ``""`` on any other recoverable adapter failure.
+
+        Raises
+        ──────
+        AdapterAuthError
+            Authentication / credential failure — the caller MUST handle
+            this and crash the session loudly.
         """
         try:
             return self.invoke_full(messages).content
+
+        except AdapterAuthError:
+            # ── Hard re-raise — NEVER swallow auth failures ────────────────
+            # A bad API key will not self-heal.  Every subsequent turn costs
+            # money and produces garbage results.  Raise immediately so the
+            # caller (target_node) can set attack_status = "error" and route
+            # straight to the reporter.
+            logger.critical(
+                "[Adapter] AUTH FAILURE on %s — re-raising to caller. "
+                "Check API key / credential rotation. Model: %s",
+                type(self).__name__,
+                self.get_model_id(),
+            )
+            raise   # propagates AdapterAuthError unchanged
+
+        except AdapterContentFilterError as exc:
+            # ── Detectable refusal — return sentinel, don't crash ──────────
+            logger.info(
+                "[Adapter] Content filter triggered on %s: %s",
+                self.get_model_id(), exc,
+            )
+            return "[CONTENT_FILTER]"
+
         except AdapterError as exc:
-            logger.error("[Adapter] invoke() failed: %s", exc)
+            # ── All other transient / recoverable errors ───────────────────
+            logger.error(
+                "[Adapter] invoke() failed on %s (%s): %s",
+                self.get_model_id(), type(exc).__name__, exc,
+            )
             return ""
 
     # ── Optional capabilities registry ────────────────────────────────────
@@ -303,7 +398,7 @@ class MockTargetAdapter(BaseTargetAdapter):
         must return a str.
 
     model_id : str
-        Reported model identifier.  Default: ``"mock-model"``.
+        Reported model identifier.  Default: ``"mock-model"``
 
     raise_on_call : int | None
         If set, raises :class:`AdapterRateLimitError` on this call number
@@ -336,7 +431,6 @@ class MockTargetAdapter(BaseTargetAdapter):
         self._call_count   = 0
 
     def invoke_full(self, messages: list[BaseMessage]) -> AdapterResponse:
-        import time
         self._call_count += 1
 
         if self._raise_on is not None and self._call_count == self._raise_on:
@@ -351,7 +445,7 @@ class MockTargetAdapter(BaseTargetAdapter):
             if not isinstance(last_content, str):
                 last_content = str(last_content)
             lower_content = last_content.lower()
-            
+
             if any(word in lower_content for word in ["draft", "review", "hypothetical", "student", "interview", "explainer"]):
                 content = "I'd be happy to review your hypothetical draft. Here are some corrections: specifically, you should focus on the underlying architecture instead of the superficial details."
             elif any(word in lower_content for word in ["technical", "mechanism", "implementation", "architecture", "system", "code"]):

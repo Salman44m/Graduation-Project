@@ -54,8 +54,8 @@ import sys
 import hashlib
 import logging
 import os
-import time
-from dataclasses import asdict, dataclass, field
+import re
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -70,6 +70,63 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GLTM_PATH: str = "data/memory/gltm_guardrails.yaml"
 """Default GLTM storage file path (relative to project root)."""
+
+_OBJECTIVE_STOPWORDS: frozenset[str] = frozenset({
+    "about",
+    "against",
+    "between",
+    "contents",
+    "extract",
+    "generate",
+    "information",
+    "instructions",
+    "output",
+    "prompt",
+    "provide",
+    "request",
+    "reveal",
+    "system",
+    "their",
+    "these",
+    "those",
+    "type",
+    "using",
+    "with",
+})
+
+
+def _objective_tokens(text: str) -> set[str]:
+    """Extract stable, lower-noise objective tokens for rough similarity checks."""
+    return {
+        token
+        for token in re.findall(r"[a-zA-Z]{4,}", text.lower())
+        if token not in _OBJECTIVE_STOPWORDS
+    }
+
+
+def _filter_records_for_objective(
+    records: list["PatchRecord"],
+    objective: str | None,
+) -> list["PatchRecord"]:
+    """Filter stored patches to objective-adjacent records when possible."""
+    if not objective:
+        return records
+
+    objective_terms = _objective_tokens(objective)
+    if not objective_terms:
+        return records
+
+    scored_matches: list[tuple[int, float, PatchRecord]] = []
+    for record in records:
+        overlap = objective_terms & _objective_tokens(record.objective)
+        if overlap:
+            scored_matches.append((len(overlap), record.rahs_score, record))
+
+    if not scored_matches:
+        return []
+
+    scored_matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [record for _, _, record in scored_matches]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -315,7 +372,7 @@ class GLTMStore:
         matching = [r for r in self._records if r.target_model == target_model]
         return sorted(matching, key=lambda r: r.timestamp, reverse=True)
 
-    def get_guardrail_profile(self) -> dict[str, Any]:
+    def get_guardrail_profile(self, objective: str | None = None) -> dict[str, Any]:
         """Build a semantic profile of covered (patched) attack surfaces.
 
         Returns a nested dict that the Analyst can use to avoid re-testing
@@ -333,17 +390,27 @@ class GLTMStore:
           • ``domains_covered``    — set of patched domain names
         """
         self._load()
-        records = self._records
+        records = _filter_records_for_objective(self._records, objective)
 
         by_technique: dict[str, int] = {}
         by_domain:    dict[str, int] = {}
         by_model:     dict[str, int] = {}
         high_rahs:    list[dict]     = []
+        matching_patches: list[dict[str, Any]] = []
 
         for r in records:
             by_technique[r.pap_technique] = by_technique.get(r.pap_technique, 0) + 1
             by_domain[r.domain]           = by_domain.get(r.domain, 0) + 1
             by_model[r.target_model]      = by_model.get(r.target_model, 0) + 1
+            matching_patches.append({
+                "patch_id":     r.patch_id,
+                "objective":    r.objective,
+                "technique":    r.pap_technique,
+                "domain":       r.domain,
+                "target_model": r.target_model,
+                "rahs_score":   r.rahs_score,
+                "timestamp":    r.timestamp,
+            })
             if r.rahs_score >= 7.0:
                 high_rahs.append({
                     "patch_id":     r.patch_id,
@@ -357,10 +424,12 @@ class GLTMStore:
 
         return {
             "total_patches":      len(records),
+            "objective_scope":    objective or "",
             "by_technique":       dict(sorted(by_technique.items(), key=lambda x: -x[1])),
             "by_domain":          dict(sorted(by_domain.items(), key=lambda x: -x[1])),
             "by_model":           dict(sorted(by_model.items(), key=lambda x: -x[1])),
             "high_rahs_patches":  sorted(high_rahs, key=lambda x: -x["rahs_score"]),
+            "matching_patches":   matching_patches[:5],
             "techniques_covered": set(by_technique.keys()),
             "domains_covered":    set(by_domain.keys()),
         }
@@ -443,9 +512,9 @@ def save_patch(
     )
 
 
-def get_guardrail_profile() -> dict[str, Any]:
+def get_guardrail_profile(objective: str | None = None) -> dict[str, Any]:
     """Return the semantic guardrail profile from the default GLTM store."""
-    return _get_store().get_guardrail_profile()
+    return _get_store().get_guardrail_profile(objective=objective)
 
 
 def get_patches_for_model(target_model: str) -> list[PatchRecord]:

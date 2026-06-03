@@ -1,0 +1,10 @@
+Extracted Intel for Session session-1-4ed6549c
+==================================================
+
+Epistemic Anchors:
+ - interesting technical scenario.
+
+RMCE Triggers:
+
+Role Inversion Corrections:
+ - understand carefully

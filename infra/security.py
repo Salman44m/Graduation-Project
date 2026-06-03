@@ -28,9 +28,9 @@ Environment Variables
 
   ALLOWED_TARGET_MODELS
       Comma-separated list of allowed target model IDs.
-      Example: ``gpt-4o,llama-3.3-70b-versatile,mock-target``
+      Example: ``deepseek-chat,claude-haiku-4-5-20251001``
       Special value ``*`` disables the allowlist (permits any model).
-      Default: ``mock-target`` (safest possible default).
+      Default: the active PromptEvo model pair.
 
   PROMPTEVO_DEV_DISABLE_AUTH
       If set to "true", disables API key validation for local development.
@@ -57,10 +57,11 @@ import os
 import time
 from typing import Callable, Set
 
-from fastapi import Depends, Header, HTTPException, Request, Response
+from fastapi import Depends, HTTPException, Request, Response
 from fastapi.security import APIKeyHeader
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
+from core.constants import DEFAULT_MODEL, JUDGE_MODEL
 
 logger = logging.getLogger("promptevo.security")
 
@@ -69,13 +70,13 @@ logger = logging.getLogger("promptevo.security")
 # ─────────────────────────────────────────────────────────────────────────────
 
 _raw_keys: str = os.getenv("PROMPTEVO_API_KEYS", "")
-_raw_models: str = os.getenv("ALLOWED_TARGET_MODELS", "mock-target")
+_raw_models: str = os.getenv("ALLOWED_TARGET_MODELS", f"{DEFAULT_MODEL},{JUDGE_MODEL}")
 
 # Parse at import time so startup logs reflect the actual config
 _VALID_KEYS: Set[str] = set(k.strip() for k in _raw_keys.split(",") if k.strip())
 _ALLOWED_MODELS: Set[str] = set(m.strip() for m in _raw_models.split(",") if m.strip())
 _WILDCARD_MODELS: bool = "*" in _ALLOWED_MODELS
-_DEV_DISABLE_AUTH: bool = os.getenv("PROMPTEVO_DEV_DISABLE_AUTH", "false").lower() == "true"
+_DEV_DISABLE_AUTH: bool = (os.getenv("PROMPTEVO_DEV_DISABLE_AUTH", "false").lower() == "true") and (os.getenv("ENVIRONMENT", "production").lower() == "development")
 _PLACEHOLDER_SECRET_MARKERS: tuple[str, ...] = (
     "placeholder_",
     "change-me",
@@ -91,10 +92,21 @@ _PLACEHOLDER_SECRET_MARKERS: tuple[str, ...] = (
 
 def _log_startup_security_state() -> None:
     """Emit startup security posture to structured logs."""
+    dev_auth = os.getenv("PROMPTEVO_DEV_DISABLE_AUTH", "false").lower() == "true"
+    env = os.getenv("ENVIRONMENT", "production").lower()
+    
+    if dev_auth and env != "development":
+        logger.critical(
+            "[Security] PROMPTEVO_DEV_DISABLE_AUTH=true but ENVIRONMENT=%s. "
+            "Authentication remains ENABLED because ENVIRONMENT is not 'development'.",
+            env
+        )
+    
     if _DEV_DISABLE_AUTH:
         logger.warning(
-            "[Security] API key authentication is DISABLED via PROMPTEVO_DEV_DISABLE_AUTH=true. "
-            "This is highly insecure and MUST NOT be used in production."
+            "[Security] API key authentication is DISABLED via PROMPTEVO_DEV_DISABLE_AUTH=true (Environment: %s). "
+            "This is highly insecure and MUST NOT be used in production.",
+            env
         )
     elif not _VALID_KEYS:
         logger.error(
@@ -144,6 +156,11 @@ def verify_startup_secrets(*, dry_run: bool | None = None) -> None:
     if dry_run is None:
         dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
 
+    # Optional: Probing providers for connectivity (REL-004)
+    # The health probe results are stored globally so the /health endpoint can serve them.
+    probe_results = probe_provider_connectivity() if os.getenv("PROBE_LLM_PROVIDERS", "false").lower() == "true" else {}
+    _set_health_probe_results(probe_results)
+
     api_keys = os.getenv("PROMPTEVO_API_KEYS", "")
     for raw_key in api_keys.split(","):
         key = raw_key.strip()
@@ -192,6 +209,89 @@ def verify_startup_secrets(*, dry_run: bool | None = None) -> None:
                 f"Startup blocked: {blocker} still contains a placeholder value. "
                 "Replace template provider credentials before running PromptEvo."
             )
+
+# ── Health Probe (REL-004) ───────────────────────────────────────────────────
+
+_HEALTH_PROBE_RESULTS: dict[str, str] = {}
+
+def _set_health_probe_results(results: dict[str, str]) -> None:
+    global _HEALTH_PROBE_RESULTS
+    _HEALTH_PROBE_RESULTS = results
+
+def get_health_probe_results() -> dict[str, str]:
+    """Retrieve the results of the startup provider connectivity probes."""
+    return _HEALTH_PROBE_RESULTS
+
+def probe_provider_connectivity() -> dict[str, str]:
+    """Lightweight API call to configured providers to test connectivity.
+    
+    Returns a dictionary of provider -> status string.
+    Failures are logged as warnings but do NOT block startup.
+    """
+    import httpx
+    
+    results = {}
+    timeout = 5.0
+    
+    # OpenAI
+    openai_key = os.getenv("OPENAI_API_KEY") or os.getenv("TARGET_OPENAI_API_KEY")
+    if openai_key and not _looks_like_placeholder_secret(openai_key):
+        try:
+            r = httpx.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {openai_key}"},
+                timeout=timeout
+            )
+            if r.status_code == 200:
+                results["openai"] = "ok"
+            else:
+                logger.warning("[Security] Health probe failed for OpenAI: HTTP %d", r.status_code)
+                results["openai"] = f"error: {r.status_code}"
+        except Exception as e:
+            logger.warning("[Security] Health probe failed for OpenAI: %s", e)
+            results["openai"] = f"error: {type(e).__name__}"
+            
+    # Anthropic
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("TARGET_ANTHROPIC_API_KEY")
+    if anthropic_key and not _looks_like_placeholder_secret(anthropic_key):
+        try:
+            # Anthropic doesn't have a simple /models GET endpoint, 
+            # we send a minimal invalid request to test auth/connectivity
+            r = httpx.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": anthropic_key, "anthropic-version": "2023-06-01"},
+                json={"messages": [], "model": "claude-3-haiku-20240307", "max_tokens": 1},
+                timeout=timeout
+            )
+            # Expecting 400 Bad Request due to empty messages, but 401 means auth failed
+            if r.status_code in (200, 400):
+                results["anthropic"] = "ok"
+            else:
+                logger.warning("[Security] Health probe failed for Anthropic: HTTP %d", r.status_code)
+                results["anthropic"] = f"error: {r.status_code}"
+        except Exception as e:
+            logger.warning("[Security] Health probe failed for Anthropic: %s", e)
+            results["anthropic"] = f"error: {type(e).__name__}"
+
+    # DeepSeek
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+    if deepseek_key and not _looks_like_placeholder_secret(deepseek_key):
+        try:
+            r = httpx.get(
+                "https://api.deepseek.com/models",
+                headers={"Authorization": f"Bearer {deepseek_key}"},
+                timeout=timeout
+            )
+            if r.status_code == 200:
+                results["deepseek"] = "ok"
+            else:
+                logger.warning("[Security] Health probe failed for DeepSeek: HTTP %d", r.status_code)
+                results["deepseek"] = f"error: {r.status_code}"
+        except Exception as e:
+            logger.warning("[Security] Health probe failed for DeepSeek: %s", e)
+            results["deepseek"] = f"error: {type(e).__name__}"
+
+    return results
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -277,7 +377,7 @@ def validate_target_model(target_model: str) -> None:
     Parameters
     ──────────
     target_model : str
-        The model ID from the incoming request (e.g. "gpt-4o").
+        The model ID from the incoming request (for example, DEFAULT_MODEL).
 
     Raises
     ──────

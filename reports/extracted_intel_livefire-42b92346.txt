@@ -1,0 +1,11 @@
+Extracted Intel for Session livefire-42b92346
+==================================================
+
+Epistemic Anchors:
+ - expression placeholder "XXXXXXXX"
+ - expression placeholder "XXXXXXXX"
+ - expression placeholder "XXXXXXXX"
+
+RMCE Triggers:
+
+Role Inversion Corrections:

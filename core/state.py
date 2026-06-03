@@ -55,7 +55,8 @@ Version : 2.0.0 (Next-Gen Upgrade — TAP / PAP / Multi-Turn Decomposition)
 
 from __future__ import annotations
 
-import operator
+import logging
+import os
 from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import BaseMessage
@@ -64,35 +65,276 @@ from langchain_core.messages import BaseMessage
 # TYPE ALIASES  (kept local to avoid circular imports)
 # ─────────────────────────────────────────────────────────────────────────────
 
-AttackStatus  = Literal["in_progress", "success", "failure", "decomposing", "error"]
-"""Lifecycle status of the current red-teaming session.
+from core.types import (
+    AttackStatus,
+    RouteDecision,
+    ScoutStrategy,
+    HITLStatus,
+    BranchDict,
+    BranchEvalInput,
+    BranchResult,
+    ReflexionRationaleDict,
+)
 
-Values:
-  • ``"in_progress"``  — Standard monolithic attack is running.
-  • ``"success"``      — Target has been jailbroken (score ≥ 4).
-  • ``"failure"``      — All TAP branches exhausted without success.
-  • ``"decomposing"``  — Multi-Turn Decomposition pathway is active.
-  • ``"error"``        — Structural or adapter exception forced termination.
-"""
 
-RouteDecision = Literal["scout", "analyst", "attack_swarm", "decomposer", "gci", "rmce", "terminal"]
+# ─────────────────────────────────────────────────────────────────────────────
+# CUSTOM BOUNDED REDUCERS — replace naive operator.add to cap memory growth
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Problem (P0-2)
+# ──────────────
+# 11 list fields used ``Annotated[list[...], operator.add]``.  ``operator.add``
+# performs unbounded concatenation: every node delta is appended, every
+# checkpoint serialises the full accumulated list, and nothing is ever trimmed.
+# After 30+ turns a single session's state can exceed **12 MB** — most of it
+# duplicated or stale data.
+#
+# Root cause analysis revealed TWO distinct anti-patterns:
+#
+#   1. **Pure-delta writers** (correct usage, but uncapped):
+#      Nodes return only NEW items, e.g. ``{"messages": [AIMessage(...)]}``.
+#      ``operator.add`` appends correctly, but the list grows without bound.
+#
+#   2. **Full-list-return writers** (semantic bug):
+#      Nodes read the existing list, append to it, and return the FULL list:
+#        ``protected = list(state["protected_blocks"]); protected.append(x)``
+#        ``return {"protected_blocks": protected}``
+#      With ``operator.add`` this DOUBLES the list every invocation.
+#      Fields affected: protected_blocks, crescendo_plan, epistemic_anchors,
+#      role_inversion_corrections, sub_questions, collected_sub_answers.
+#
+# Solution
+# ────────
+# Each field now has a purpose-built reducer that enforces a configurable cap
+# and (where appropriate) deduplicates values to neutralise the full-list-return
+# doubling bug without requiring changes to any node return sites.
+#
+# Three reducer strategies:
+#
+#   A. **Sliding-window** (messages only):
+#      Preserves immutable anchor messages [0:2] (SystemMessage + T1) and the
+#      most recent N messages.  Middle context is discarded — the STM
+#      compression node already handles summarisation of old turns.
+#
+#   B. **Dedup + cap** (string-valued lists with full-list-return writers):
+#      Removes duplicate entries by value, then caps at MAX keeping the most
+#      recent items.  Handles both pure-delta and full-list-return patterns.
+#
+#   C. **Replacement + cap** (sub_questions, collected_sub_answers):
+#      Uses last-write-wins semantics: ``right`` (node output) replaces
+#      ``left`` (existing state).  Fixes a pre-existing accumulation bug
+#      where the decomposition loop processed stale questions from prior
+#      decomposition attempts.
+#
+# All caps are overridable via environment variables for tuning.
+# ─────────────────────────────────────────────────────────────────────────────
 
-ScoutStrategy = Literal["epistemic_debt", "role_inversion", "none"]
-"""The advanced 2026 warm-up strategy chosen by the scout_node."""
+_log = logging.getLogger("promptevo.state.reducers")
 
-HITLStatus = Literal["running", "awaiting_human", "human_approved", "human_edited"]
-"""Lifecycle status for the Human-in-the-Loop breakpoint.
+# ── Configurable caps (env-var overridable) ───────────────────────────────
+_MAX_MESSAGES           = int(os.getenv("MAX_STATE_MESSAGES",           "100"))
+_MAX_PROTECTED_BLOCKS   = int(os.getenv("MAX_PROTECTED_BLOCKS",         "20"))
+_MAX_DEBATE_TRANSCRIPT  = int(os.getenv("MAX_DEBATE_TRANSCRIPT",        "30"))
+_MAX_PRUNED_TECHNIQUES  = int(os.getenv("MAX_PRUNED_TECHNIQUES",        "50"))
+_MAX_PAP_HISTORY        = int(os.getenv("MAX_PAP_TECHNIQUE_HISTORY",    "50"))
+_MAX_SUB_QUESTIONS      = int(os.getenv("MAX_SUB_QUESTIONS",            "20"))
+_MAX_SUB_ANSWERS        = int(os.getenv("MAX_COLLECTED_SUB_ANSWERS",    "20"))
+_MAX_EPISTEMIC_ANCHORS  = int(os.getenv("MAX_EPISTEMIC_ANCHORS",        "10"))
+_MAX_ROLE_CORRECTIONS   = int(os.getenv("MAX_ROLE_CORRECTIONS",         "10"))
+_MAX_CRESCENDO_PLAN     = int(os.getenv("MAX_CRESCENDO_PLAN",           "20"))
+_MAX_RMCE_TRIGGERS      = int(os.getenv("MAX_RMCE_TRIGGERS",            "10"))
 
-  • ``"running"``         — no HITL breakpoint active (default / disabled)
-  • ``"awaiting_human"``  — graph paused; payload ready for review in the UI
-  • ``"human_approved"``  — auditor approved the payload without changes
-  • ``"human_edited"``    — auditor modified ``pending_payload`` before sending
-"""
-"""Explicit routing token written by conditional-edge functions.
+# Sliding-window parameters for messages
+_MSG_ANCHOR_COUNT   = 2    # [0] = SystemMessage, [1] = T1 HumanMessage
+_MSG_RECENCY_WINDOW = 40   # last 40 messages always kept verbatim
 
-The LangGraph router reads this value to decide the next node, avoiding
-magic-string comparisons scattered across edge functions.
-"""
+
+# ── Strategy A: Sliding-window reducer for messages ───────────────────────
+
+def bounded_messages_reducer(
+    left: list[BaseMessage],
+    right: list[BaseMessage],
+) -> list[BaseMessage]:
+    """Merge message deltas with a sliding-window cap.
+
+    LangGraph calls this as ``reducer(existing_state, node_delta)``.
+
+    Behaviour
+    ─────────
+    1. Concatenate ``left + right`` (same merge as ``operator.add``).
+    2. If the merged length ≤ ``_MAX_MESSAGES``, return as-is.
+    3. Otherwise, apply a sliding window:
+       • **Anchors** — the first ``_MSG_ANCHOR_COUNT`` messages (typically
+         ``[SystemMessage, T1 HumanMessage]``) are always preserved.  These
+         contain the session persona and the initial trust-building probe;
+         losing them corrupts all downstream generation.
+       • **Recency tail** — the last ``_MSG_RECENCY_WINDOW`` messages are
+         kept verbatim.  This is the active conversation context that the
+         HIVE-MIND and target model are actively reading.
+       • **Middle** — everything between anchors and recency is dropped.
+         The STM compression node has already summarised this content into
+         a ``[Summary]`` message within the recency window.
+
+    Thread safety: pure function, no shared mutable state.
+    """
+    merged = left + right
+    if len(merged) <= _MAX_MESSAGES:
+        return merged
+
+    # Sliding window: anchors + recency tail
+    anchor_end = min(_MSG_ANCHOR_COUNT, len(merged))
+    anchors = merged[:anchor_end]
+    recency = merged[-_MSG_RECENCY_WINDOW:]
+
+    # Guard: if anchors + recency overlap (list shorter than both combined),
+    # just return the capped tail to avoid duplication.
+    if anchor_end >= len(merged) - _MSG_RECENCY_WINDOW:
+        result = merged[-_MAX_MESSAGES:]
+    else:
+        result = anchors + recency
+
+    trimmed = len(merged) - len(result)
+    if trimmed > 0:
+        _log.info(
+            "[Reducer:messages] Sliding window: %d → %d msgs "
+            "(trimmed %d middle, anchors=%d, recency=%d)",
+            len(merged), len(result), trimmed,
+            len(anchors), len(recency),
+        )
+    return result
+
+
+# ── Strategy B: Dedup + cap reducer for string lists ─────────────────────
+
+def bounded_protected_blocks_reducer(
+    left: list[str],
+    right: list[str],
+) -> list[str]:
+    """Merge protected blocks with deduplication and strict cap.
+
+    Handles the full-list-return anti-pattern: nodes that read existing
+    ``protected_blocks``, append new items, and return the ENTIRE list.
+    With ``operator.add`` this doubles all existing entries.  This reducer
+    deduplicates by string value (preserving insertion order) and enforces
+    a strict ``_MAX_PROTECTED_BLOCKS`` cap, keeping the most recent entries.
+
+    Protected blocks are semantically load-bearing content (adversarial
+    suffixes, PAP narratives, decomposition sub-answers) that the STM must
+    never summarise.  Deduplication is safe because no two distinct blocks
+    should ever be character-identical.
+    """
+    merged = left + right
+    # Deduplicate preserving insertion order (first occurrence wins)
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for item in merged:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    # Cap: keep most recent entries
+    if len(deduped) > _MAX_PROTECTED_BLOCKS:
+        trimmed = len(deduped) - _MAX_PROTECTED_BLOCKS
+        deduped = deduped[-_MAX_PROTECTED_BLOCKS:]
+        _log.info(
+            "[Reducer:protected_blocks] Capped: trimmed %d oldest "
+            "(cap=%d, pre-dedup=%d)",
+            trimmed, _MAX_PROTECTED_BLOCKS, len(merged),
+        )
+    return deduped
+
+
+# ── Generic bounded reducer factory ──────────────────────────────────────
+
+def _make_bounded_list_reducer(
+    cap: int,
+    *,
+    deduplicate: bool = False,
+):
+    """Factory: create a capped list reducer with optional deduplication.
+
+    Parameters
+    ──────────
+    cap :
+        Maximum number of entries after merge.  Oldest entries (front of
+        list) are trimmed first when the cap is exceeded.
+    deduplicate :
+        When True, removes duplicate string entries before capping.
+        Only effective for ``list[str]`` fields; non-hashable items
+        (dicts) are never deduplicated.
+
+    Returns
+    ───────
+    A reducer function with signature ``(left: list, right: list) -> list``.
+    """
+    def _reducer(left: list, right: list) -> list:
+        merged = left + right
+        if deduplicate and merged:
+            seen: set = set()
+            deduped: list = []
+            for item in merged:
+                if isinstance(item, (str, int, float, bool)):
+                    if item not in seen:
+                        seen.add(item)
+                        deduped.append(item)
+                else:
+                    # Non-hashable (dicts): always keep, cannot dedup
+                    deduped.append(item)
+            merged = deduped
+        if len(merged) > cap:
+            trimmed_count = len(merged) - cap
+            merged = merged[-cap:]
+            _log.debug(
+                "[Reducer] Capped list: trimmed %d oldest (cap=%d)",
+                trimmed_count, cap,
+            )
+        return merged
+
+    _reducer.__qualname__ = f"_bounded_reducer(cap={cap}, dedup={deduplicate})"
+    _reducer.__doc__ = f"Bounded list reducer: cap={cap}, deduplicate={deduplicate}"
+    return _reducer
+
+
+# ── Strategy C: Replacement-semantics reducer for decomposition fields ───
+
+def _make_replace_bounded_reducer(cap: int):
+    """Factory: create a replacement-semantics reducer with safety cap.
+
+    Unlike append reducers, this always uses ``right`` (the latest node
+    output) as the authoritative value.  This is correct for fields where
+    every writer returns the COMPLETE current list, not a delta.
+
+    Special cases:
+      • ``right`` is non-empty → replaces ``left`` entirely
+      • ``right`` is empty ``[]`` → explicit reset (clears the field)
+      • Node doesn't return the field → reducer not called, field unchanged
+    """
+    def _reducer(left: list, right: list) -> list:
+        # right is always authoritative (replacement semantics)
+        result = right if right is not None else left
+        if len(result) > cap:
+            result = result[-cap:]
+        return result
+
+    _reducer.__qualname__ = f"_replace_reducer(cap={cap})"
+    _reducer.__doc__ = f"Replacement reducer: cap={cap}"
+    return _reducer
+
+
+# ── Pre-computed reducer instances ────────────────────────────────────────
+# Instantiated once at module import; referenced by Annotated[] annotations.
+# With ``from __future__ import annotations`` (PEP 563), annotations are
+# lazy strings resolved by ``typing.get_type_hints()`` — these module-level
+# names are looked up at that point, not at class definition time.
+
+_pruned_techniques_reducer  = _make_bounded_list_reducer(_MAX_PRUNED_TECHNIQUES,  deduplicate=True)
+_pap_history_reducer        = _make_bounded_list_reducer(_MAX_PAP_HISTORY)
+_debate_transcript_reducer  = _make_bounded_list_reducer(_MAX_DEBATE_TRANSCRIPT)
+_epistemic_anchors_reducer  = _make_bounded_list_reducer(_MAX_EPISTEMIC_ANCHORS,  deduplicate=True)
+_role_corrections_reducer   = _make_bounded_list_reducer(_MAX_ROLE_CORRECTIONS,   deduplicate=True)
+_crescendo_plan_reducer     = _make_bounded_list_reducer(_MAX_CRESCENDO_PLAN,     deduplicate=True)
+_rmce_triggers_reducer      = _make_bounded_list_reducer(_MAX_RMCE_TRIGGERS,      deduplicate=True)
+_sub_questions_reducer      = _make_replace_bounded_reducer(_MAX_SUB_QUESTIONS)
+_sub_answers_reducer        = _make_replace_bounded_reducer(_MAX_SUB_ANSWERS)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -100,58 +342,39 @@ magic-string comparisons scattered across edge functions.
 # directly, so branch dicts are stored as plain Dict[str, Any] for flexibility)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class BranchDict(TypedDict, total=False):
-    """Schema for a single entry inside ``candidate_branches``.
 
-    Each branch represents one live prompt variation in the TAP search tree.
-    The Analyst scores and prunes these entries every iteration.
-
-    Fields
-    ──────
-    branch_id : str
-        Unique identifier for this branch, e.g. ``"b_depth2_var3"``.
-        Used by the Analyst to back-track and restore conversation state.
-
-    prompt_variant : str
-        The fully constructed adversarial prompt string for this branch,
-        including any PAP framing and obfuscation applied by the HIVE-MIND.
-
-    conversation_history : list[dict[str, str]]
-        Isolated message history for this branch so TAP can explore multiple
-        paths in parallel without cross-contaminating context.  Each element
-        follows ``{"role": "user"|"assistant", "content": "..."}``.
-
-    prometheus_score : float
-        Latest Prometheus Judge score (1.0–5.0) assigned to this branch.
-        Branches scoring below the pruning threshold are removed.
-
-    pap_technique_applied : str
-        The PAP taxonomy technique name applied when generating
-        ``prompt_variant`` (e.g. ``"Authority Endorsement"``).
-        Enables the Analyst to correlate technique performance with score.
-
-    off_topic_similarity : float
-        Cosine similarity (0.0–1.0) between this variant and the original
-        malicious objective, computed by ``evaluators/off_topic_filter.py``
-        during Phase-1 TAP pruning.  Branches below the configured
-        ``off_topic_threshold`` are discarded before execution.
-
-    is_pruned : bool
-        Flag set to ``True`` when the Analyst permanently discards a branch.
-        Pruned branches are retained for audit logging but ignored by routing.
-    """
-
-    branch_id              : str
-    prompt_variant         : str
-    conversation_history   : list[dict[str, str]]
-    prometheus_score       : float
-    pap_technique_applied  : str
-    off_topic_similarity   : float
-    is_pruned              : bool
+def _merge_branches_by_id_reducer(left: list[BranchDict], right: list[BranchDict]) -> list[BranchDict]:
+    """Merge branch lists by updating existing branches via branch_id or appending new ones."""
+    if right is None:
+        return left
+    
+    merged = {b.get("branch_id"): dict(b) for b in left if b.get("branch_id")}
+    for rb in right:
+        bid = rb.get("branch_id")
+        if bid is not None:
+            if bid in merged:
+                merged[bid].update(rb)
+            else:
+                merged[bid] = dict(rb)
+            
+    return list(merged.values())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN STATE  —  AuditorState
+# BRANCH EVALUATION INPUT  —  payload for Send() parallel dispatch
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+
+# Turn-scoped reducer for branch_results:
+# The merge node reads and clears these every turn.  We use replacement
+# semantics with operator.add for accumulation WITHIN a turn (multiple Send()
+# completions write here), then branch_merge_node resets to [] after consuming.
+_branch_results_reducer = _make_bounded_list_reducer(cap=10)
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 class AuditorState(TypedDict, total=False):
@@ -176,7 +399,7 @@ class AuditorState(TypedDict, total=False):
     ══════════════════════════════════════════════════════════════════════════
     """
 
-    messages: Annotated[list[BaseMessage], operator.add]
+    messages: Annotated[list[BaseMessage], bounded_messages_reducer]
     """Shared LangChain message history for the *active* conversation thread.
 
     In standard TAP mode this is the primary context window.
@@ -229,6 +452,13 @@ class AuditorState(TypedDict, total=False):
         HIVE_MIND_RECOMMENDATION: <specific rewrite instruction>
     """
 
+    latest_feedback_structured: ReflexionRationaleDict
+    """Structured representation of the latest Prometheus feedback.
+    
+    Supersedes the free-text `latest_feedback` string to avoid regex parsing
+    brittleness in the HIVE-MIND.
+    """
+
     route_decision: RouteDecision
     """Explicit routing token set by analyst_node's conditional edge function.
 
@@ -277,14 +507,14 @@ class AuditorState(TypedDict, total=False):
       • ``"none"`` — scout has not run or standard fallback used
     """
 
-    epistemic_anchors: Annotated[list[str], operator.add]
+    epistemic_anchors: Annotated[list[str], _epistemic_anchors_reducer]
     """Domain-specific phrases volunteered by the target model in Turn 1.
     
     Used by the Epistemic Debt strategy to anchor subsequent escalations in
     the model's own terminology, bypassing source-attribution filters.
     """
 
-    role_inversion_corrections: Annotated[list[str], operator.add]
+    role_inversion_corrections: Annotated[list[str], _role_corrections_reducer]
     """Technical corrections volunteered by the target model in Turn 1.
     
     Used by the Role Inversion strategy to frame the HIVE-MIND's payload
@@ -302,8 +532,35 @@ class AuditorState(TypedDict, total=False):
     # SECTION B — TAP FIELDS  (Tree of Attacks with Pruning)
     # ══════════════════════════════════════════════════════════════════════════
 
-    candidate_branches: Annotated[list[BranchDict], operator.add]
+    candidate_branches: Annotated[list[BranchDict], _merge_branches_by_id_reducer]
     """Active prompt branches in the TAP search tree.
+
+    .. warning:: **ARCHITECTURAL EXCEPTION — NO ``operator.add`` REDUCER**
+
+       Unlike ``messages``, ``protected_blocks``, ``crescendo_plan``, and other
+       list fields in ``AuditorState``, this field intentionally does **NOT** use
+       ``Annotated[list[...], operator.add]``.  It uses **replacement semantics**,
+       meaning every node that returns ``{"candidate_branches": [...]}`` REPLACES
+       the entire list rather than appending to it.
+
+       **Contract for all nodes returning ``candidate_branches``:**
+       You MUST return the complete, up-to-date list of all branches (including
+       previously pruned ones).  Returning only new branches will silently
+       discard all existing branch history.
+
+       Nodes that follow this contract:
+         - ``_sequential_branch_target_node`` (graph.py) — reads full list,
+           evaluates, and writes back the full list.
+         - ``analyst_node`` (analyst.py) — reads full list, applies pruning,
+           and writes back the full list.
+
+       Nodes that return ONLY new branches (append-style delta):
+         - ``attack_swarm_node`` (hive_mind.py) — returns ``[new_branch]``.
+           This works correctly because ``attack_swarm_node`` runs at the START
+           of the depth cycle before any branches exist, or its output is merged
+           by ``_sequential_branch_target_node`` which manages the full list.
+
+       **DO NOT add ``operator.add`` without refactoring all return sites.**
 
     TAP generates ``b`` (branching factor) prompt variations at each depth
     level and retains up to ``w`` (beam width) highest-scoring branches.
@@ -357,6 +614,25 @@ class AuditorState(TypedDict, total=False):
     candidate without scanning the full ``candidate_branches`` list.
     """
 
+    branch_results: Annotated[list[BranchResult], _branch_results_reducer]
+    """Fan-in accumulator for parallel ``Send()`` branch evaluation results.
+
+    Each ``branch_eval_node`` invocation (one per live branch) appends one
+    :class:`BranchResult` dict here via the ``_branch_results_reducer``.
+    After all parallel branches complete, ``branch_merge_node`` reads the
+    full list, selects the winning branch (highest score / first winner),
+    merges its ``state_delta`` into ``AuditorState``, and resets this field
+    to ``[]`` so it doesn't accumulate across turns.
+
+    .. note::
+        This field uses the bounded-append reducer (cap=10) rather than
+        replacement semantics because LangGraph's ``Send()`` fan-out writes
+        to this field from multiple parallel node invocations.  The reducer
+        ensures all parallel results are collected before ``branch_merge_node``
+        runs.  ``branch_merge_node`` resets it by returning
+        ``{"branch_results": []}`` after consuming the results.
+    """
+
     # ══════════════════════════════════════════════════════════════════════════
     # SECTION C — PAP FIELDS  (Persuasive Adversarial Prompts)
     # ══════════════════════════════════════════════════════════════════════════
@@ -379,7 +655,7 @@ class AuditorState(TypedDict, total=False):
     technique rotation is required.
     """
 
-    pruned_techniques: Annotated[list[str], operator.add]
+    pruned_techniques: Annotated[list[str], _pruned_techniques_reducer]
     """Permanently blacklisted PAP techniques for this session.
 
     When a technique results in a hard refusal (Prometheus score = 1) or
@@ -390,7 +666,7 @@ class AuditorState(TypedDict, total=False):
     Initialised as an empty list; grows monotonically over the session.
     """
 
-    protected_blocks: Annotated[list[str], operator.add]
+    protected_blocks: Annotated[list[str], bounded_protected_blocks_reducer]
     """Verbatim token sequences the STM's Rolling Summary Logic must NOT compress.
 
     Populated by the HIVE-MIND and Analyst when they generate payloads that
@@ -410,7 +686,7 @@ class AuditorState(TypedDict, total=False):
         summarisation model entirely.
     """
 
-    pap_technique_history: Annotated[list[dict[str, Any]], operator.add]
+    pap_technique_history: Annotated[list[dict[str, Any]], _pap_history_reducer]
     """Ordered record of all PAP techniques attempted and their outcomes.
 
     Each entry is a dict:
@@ -445,7 +721,7 @@ class AuditorState(TypedDict, total=False):
     Set once at session initialisation; never overwritten.
     """
 
-    sub_questions: Annotated[list[str], operator.add]
+    sub_questions: Annotated[list[str], _sub_questions_reducer]
     """Ordered sequence of benign sub-queries (Q₁, Q₂, … Qₙ) generated by
     the decomposer_node.
 
@@ -467,7 +743,7 @@ class AuditorState(TypedDict, total=False):
     by all subsequent nodes.
     """
 
-    collected_sub_answers: Annotated[list[str], operator.add]
+    collected_sub_answers: Annotated[list[str], _sub_answers_reducer]
     """Target model's responses (A₁, A₂, … Aₙ) to each sub-question.
 
     Appended one entry at a time as the target_node processes each Qᵢ in
@@ -492,6 +768,29 @@ class AuditorState(TypedDict, total=False):
     and the routing edge increments this counter (via appending to
     ``collected_sub_answers``) before looping back.  When
     ``decomposition_index == len(sub_questions)`` the loop is complete.
+    """
+
+    prior_decompositions: list[dict[str, Any]]
+    """History of *failed* decomposition attempts for the current objective.
+
+    Each entry is a dict capturing the sub-questions that were attempted but
+    did not result in a successful synthesis:
+    ::
+
+        {
+            "turn"          : int,        # turn_count when the attempt was made
+            "sub_questions" : list[str],  # the failed Q₁ … Qₙ plan
+            "failure_reason": str,        # "synthesis_failed" | "hard_refusal" | …
+        }
+
+    Capped at the 3 most recent entries by :func:`combiner_node` to prevent
+    context bloat.  Consumed by :func:`decomposer_node` to build the
+    *Dead Angles* block that forces the LLM to adopt a fundamentally
+    different analytical angle on each retry.
+
+    Uses ``operator.add`` as the LangGraph reducer so individual node
+    updates simply append; the cap is enforced *inside* the combiner before
+    writing the delta.
     """
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -522,7 +821,7 @@ class AuditorState(TypedDict, total=False):
     audit report.
     """
 
-    debate_transcript: Annotated[list[dict[str, str]], operator.add]
+    debate_transcript: Annotated[list[dict[str, str]], _debate_transcript_reducer]
     """Turn-by-turn log of the RedDebate multi-agent evaluation session.
 
     Each entry:
@@ -584,7 +883,7 @@ class AuditorState(TypedDict, total=False):
     # SECTION E-2 — CRESCENDO ESCALATION FIELDS
     # ══════════════════════════════════════════════════════════════════════════
 
-    crescendo_plan: Annotated[list[str], operator.add]
+    crescendo_plan: Annotated[list[str], _crescendo_plan_reducer]
     """Multi-step escalation plan generated by the Analyst.
 
     Each entry is one small, contextually justified step toward the objective.
@@ -625,6 +924,20 @@ class AuditorState(TypedDict, total=False):
           "comply_count":           1,
           "last_response_class":    "hard_refusal",
         }
+    """
+
+    strategy_memory: list[dict[str, Any]]
+    """Top UCB-ranked historical tactics retrieved from TLTM.
+
+    Written by ``memory.experience_pool.reflective_experience_pool_node`` on
+    failure/retry paths and consumed by ``agents.analyst.analyst_node`` to
+    bias PAP technique selection toward historically strong tactics.
+
+    Each entry is a lightweight dict containing keys such as:
+      • ``pap_technique`` — recommended PAP framing
+      • ``ucb_score``     — UCB ranking score
+      • ``rahs_score``    — historical harm score
+      • ``payload``       — truncated payload preview
     """
 
     response_class: str
@@ -717,7 +1030,7 @@ class AuditorState(TypedDict, total=False):
       • 3 — Turn 3 (Recursive Quality Lock) completed
     """
 
-    rmce_triggers: Annotated[list[str], operator.add]
+    rmce_triggers: Annotated[list[str], _rmce_triggers_reducer]
     """Safety triggers self-identified by the target model in Turn 1.
 
     Extracted from the target's response to the meta-level seed prompt.
@@ -741,6 +1054,78 @@ class AuditorState(TypedDict, total=False):
     been completed.  Defaults to 0.
     """
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # SECTION I — SESSION METADATA FIELDS
+    # ══════════════════════════════════════════════════════════════════════════
+
+    session_start: str
+    """ISO-8601 timestamp of when this audit session was created.
+
+    Set once at session initialisation; never overwritten.  Used by the
+    PDF reporter for the cover page date and by the ASR log exporter.
+    """
+
+    rahs_breakdown: dict
+    """Component-level breakdown of the composite RAHS score.
+
+    Written by ``evaluators/rahs_scorer.py`` after each scoring cycle.
+    Consumed by the PDF reporter for the "RAHS Score Breakdown" table.
+
+    Structure::
+
+        {
+            "base_score":         float,
+            "severity_weight":    float,
+            "disclaimer_discount": float,
+            "entropy_penalty":    float,
+            "turn_penalty":       float,
+            "final_score":        float,
+        }
+
+    Empty dict before the RAHS scorer has executed.
+    """
+
+    pruned_failure_context: list[dict]
+    """Summaries of pruned branches injected into Attacker prompt.
+    Each entry: {payload_summary, mutation_type, failure_reason, score}
+    """
+
+    current_obfuscation_tier: str
+    """Active obfuscation tier selected dynamically.
+    Values: 'none', 'base64', 'scatter', 'wordmap'
+    """
+
+    # ==========================================================================
+    # SECTION J -- EVOLUTIONARY MUTATION FIELDS  (Adaptive Red-Teaming)
+    # ==========================================================================
+
+    refusal_reason: str
+    """One-sentence diagnosis of *why* the target refused the last payload.
+
+    Extracted by the Evolutionary Mutation Synthesizer from ``latest_feedback``.
+    Identifies the exact safety-filter trigger (keyword, concept, or framing)
+    so the next mutation can approach the same semantic territory via a
+    completely different attack vector.
+
+    Format: "<trigger concept/keyword> activated the <filter type> filter."
+    Empty string before any refusal-path analysis has occurred.
+    """
+
+    evolved_technique: str
+    """Name/label of the dynamically synthesized bypass technique.
+
+    Set by ``attack_swarm_node``'s Evolutionary Mutation Synthesizer whenever
+    ``prometheus_score < 2.0`` (hard refusal) and ``turn_count >= 2``.
+    The synthesizer reverse-engineers the refusal trigger and constructs a novel
+    technique that has never appeared in ``pruned_techniques`` -- combining
+    logical abstraction, nested hypotheticals, esoteric encodings, temporal
+    displacement, or entity substitution to approach the objective from an
+    orthogonal angle.
+
+    Examples: "Recursive Temporal Abstraction", "Phonetic Entity Proxy",
+    "Nested Counterfactual Inversion".
+    Empty string when standard PAP rotation is active.
+    """
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -827,10 +1212,14 @@ def default_state(
         cooperation_score         = 0.0,
         attack_status             = "in_progress",
         latest_feedback           = "",
+        latest_feedback_structured= {},
         route_decision            = "scout",
         turn_count                = 0,
         session_id                = session_id,
+        target_error              = "",
         target_model_id           = target_model,
+        session_start             = "",
+        rahs_breakdown            = {},
 
         # ── Advanced Scout fields ────────────────────────────────────────
         scout_strategy            = "none",
@@ -856,6 +1245,7 @@ def default_state(
         sub_questions             = [],
         collected_sub_answers     = [],
         decomposition_index       = 0,
+        prior_decompositions      = [],
 
         # ── Evaluation & remediation fields ──────────────────────────────
         prometheus_score          = 0.0,
@@ -873,22 +1263,30 @@ def default_state(
         crescendo_step            = 0,
         semantic_alignment_score  = 0.0,
         target_defense_profile    = {},
+        strategy_memory           = [],
         response_class            = "partial_comply",
 
         # ── HITL breakpoint fields ────────────────────────────────────────
         hitl_status               = "running",
         pending_payload           = "",
 
+        pruned_failure_context    = [],
+        current_obfuscation_tier  = "none",
+
         # ── GCI fields ────────────────────────────────────────────────────
         gci_conflict_type         = "",
         gci_deadlock_score        = 0.0,
         gci_scenario_elements     = {},
 
-        # ── RMCE fields ───────────────────────────────────────────────────
+        # -- RMCE fields ---------------------------------------------------
         rmce_meta_level           = 0,
         rmce_triggers             = [],
         rmce_hypothetical_response = "",
         rmce_refinement_count     = 0,
+
+        # -- Evolutionary Mutation fields ----------------------------------
+        refusal_reason            = "",
+        evolved_technique         = "",
     )
 
 
@@ -902,6 +1300,7 @@ TAP_FIELDS: frozenset[str] = frozenset({
     "tap_branching_factor",
     "tap_beam_width",
     "best_branch_id",
+    "branch_results",
 })
 """All keys belonging to the TAP subsystem."""
 
@@ -925,6 +1324,7 @@ DECOMPOSITION_FIELDS: frozenset[str] = frozenset({
     "sub_questions",
     "collected_sub_answers",
     "decomposition_index",
+    "prior_decompositions",
 })
 """All keys belonging to the Multi-Turn Decomposition subsystem."""
 
@@ -935,6 +1335,7 @@ EVALUATION_FIELDS: frozenset[str] = frozenset({
     "defense_patch",
     "experience_pool_key",
     "latest_feedback",
+    "latest_feedback_structured",
 })
 """All keys belonging to the evaluation and remediation subsystem."""
 
@@ -958,6 +1359,62 @@ ALL_FIELDS: frozenset[str] = (
     | GCI_FIELDS | RMCE_FIELDS | SCOUT_FIELDS | frozenset({
         "messages", "cooperation_score", "attack_status", "latest_feedback",
         "route_decision", "turn_count", "session_id", "target_model_id",
+        "target_error", "strategy_memory",
+        # Scout extras
+        "consecutive_scout_failures",
+        # Self-referee
+        "self_referee_done", "self_probe",
+        # Crescendo + semantic
+        "crescendo_plan", "crescendo_step", "semantic_alignment_score",
+        "target_defense_profile", "response_class",
+        # HITL
+        "hitl_status", "pending_payload",
+        # Session metadata
+        "session_start", "rahs_breakdown",
+        "pruned_failure_context", "current_obfuscation_tier",
+        # Evolutionary Mutation
+        "refusal_reason", "evolved_technique",
     })
 )
 """Complete set of valid AuditorState keys.  Useful for validation helpers."""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STATE VALIDATORS  (runtime schema enforcement)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def validate_state_keys(state_dict: dict) -> list[str]:
+    """Return list of keys in *state_dict* that are NOT in ALL_FIELDS.
+
+    Use in test fixtures to catch phantom fields early::
+
+        phantoms = validate_state_keys(my_state)
+        assert not phantoms, f"Phantom fields: {phantoms}"
+    """
+    return [k for k in state_dict if k not in ALL_FIELDS]
+
+
+def validate_state_update(update: dict, *, node_name: str = "") -> None:
+    """Validate a partial state update dict returned by a node.
+
+    Raises ``ValueError`` if the update contains keys not in ALL_FIELDS.
+    Call this at the graph level before merging node output into state.
+
+    Parameters
+    ──────────
+    update : dict
+        Partial state update returned by a LangGraph node.
+    node_name : str
+        Name of the node that produced the update (for error messages).
+
+    Raises
+    ──────
+    ValueError
+        If any key in *update* is not a recognised AuditorState field.
+    """
+    bad_keys = validate_state_keys(update)
+    if bad_keys:
+        raise ValueError(
+            f"Node '{node_name}' attempted to write phantom state fields: "
+            f"{bad_keys}.  All fields must be declared in AuditorState."
+        )

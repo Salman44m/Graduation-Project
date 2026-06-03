@@ -38,10 +38,9 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Optional
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -152,140 +151,6 @@ MAX_SESSION_TURNS:       int   = settings.max_session_turns
 # LLM FACTORY HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_chat_model(
-    provider:    str,
-    model:       str,
-    temperature: float = 0.9,
-    api_key:     str   = "",
-) -> Any:
-    """Instantiate a LangChain chat model for the given provider.
-
-    Parameters
-    ──────────
-    provider : str
-        One of: "openai", "anthropic", "groq", "ollama".
-    model : str
-        Provider-specific model name.
-    temperature : float
-        Sampling temperature.
-    api_key : str
-        Provider API key (falls back to relevant env var).
-
-    Returns
-    ───────
-    BaseChatModel | None
-        Instantiated model, or None if the provider package is not installed
-        or no API key is available.
-    """
-    p = provider.lower().strip()
-
-    if p == "openai":
-        key = api_key or settings.openai_api_key
-        if not key:
-            logger.warning("[Config] OPENAI_API_KEY not set — skipping OpenAI LLM init.")
-            return None
-        try:
-            from langchain_openai import ChatOpenAI
-            return ChatOpenAI(model=model, temperature=temperature, api_key=key)
-        except ImportError:
-            logger.warning("[Config] langchain-openai not installed.")
-            return None
-
-    if p == "anthropic":
-        key = api_key or settings.anthropic_api_key
-        if not key:
-            logger.warning("[Config] ANTHROPIC_API_KEY not set — skipping Anthropic LLM init.")
-            return None
-        try:
-            from langchain_anthropic import ChatAnthropic
-            return ChatAnthropic(model=model, temperature=temperature, api_key=key)
-        except ImportError:
-            logger.warning("[Config] langchain-anthropic not installed.")
-            return None
-
-    if p == "groq":
-        key = api_key or settings.groq_api_key
-        if not key:
-            logger.warning("[Config] GROQ_API_KEY not set — skipping Groq LLM init.")
-            return None
-        try:
-            from langchain_groq import ChatGroq
-            return ChatGroq(model=model, temperature=temperature, api_key=key)
-        except ImportError:
-            logger.warning("[Config] langchain-groq not installed.")
-            return None
-
-    if p == "ollama":
-        try:
-            from langchain_ollama import ChatOllama
-            return ChatOllama(model=model, base_url=settings.ollama_base_url)
-        except ImportError:
-            try:
-                from langchain_community.chat_models import ChatOllama as _CO
-                return _CO(model=model, base_url=settings.ollama_base_url)
-            except ImportError:
-                logger.warning("[Config] langchain-ollama not installed.")
-                return None
-
-    logger.warning("[Config] Unknown provider: %r", provider)
-    return None
-
-
-def _auto_detect_provider_and_build(
-    provider_hint: str,
-    model_hint:    str,
-    temperature:   float = 0.9,
-    role:          str   = "unknown",
-) -> Any:
-    """Auto-detect a working provider from the environment when no explicit
-    provider is given (provider_hint == "").
-
-    Tries, in order: Groq → OpenAI → Anthropic → None.
-
-    Parameters
-    ──────────
-    provider_hint : str
-        Explicit provider override; empty string triggers auto-detect.
-    model_hint : str
-        Model name override; empty string triggers provider-default.
-    temperature : float
-        Sampling temperature.
-    role : str
-        Human-readable role name for log messages.
-
-    Returns
-    ───────
-    BaseChatModel | None
-    """
-    if provider_hint:
-        _defaults = {
-            "groq":      settings.attacker_model or "llama-3.3-70b-versatile",
-            "openai":    "gpt-4o-mini",
-            "anthropic": "claude-haiku-4-5-20251001",
-            "ollama":    settings.ollama_model,
-        }
-        model = model_hint or _defaults.get(provider_hint.lower(), "")
-        llm   = _build_chat_model(provider_hint, model, temperature)
-        if llm:
-            logger.debug("[Config] %s LLM: %s/%s", role, provider_hint, model)
-        return llm
-
-    # Auto-detect: try Groq first (fastest / cheapest), then OpenAI, then Anthropic
-    for prov, mdl, key_attr in [
-        ("groq",     "llama-3.3-70b-versatile",    "groq_api_key"),
-        ("openai",   "gpt-4o-mini",                "openai_api_key"),
-        ("anthropic","claude-haiku-4-5-20251001",  "anthropic_api_key"),
-    ]:
-        if getattr(settings, key_attr, ""):
-            m = model_hint or mdl
-            llm = _build_chat_model(prov, m, temperature)
-            if llm:
-                logger.info("[Config] %s LLM auto-detected: %s/%s", role, prov, m)
-                return llm
-
-    logger.warning("[Config] No %s LLM configured — all provider attempts failed.", role)
-    return None
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PUBLIC FACTORY FUNCTIONS
@@ -350,61 +215,61 @@ _circuit_breaker = _ProviderCircuitBreaker(
 )
 
 
+def _resolve_api_key(provider: str) -> str | None:
+    prov = provider.lower()
+    if prov == "deepseek": return settings.openai_api_key
+    if prov == "anthropic": return settings.anthropic_api_key
+    if prov == "openai": return settings.openai_api_key
+    if prov == "groq": return getattr(settings, "groq_api_key", None)
+    return None
+
+def _build_model_safe(provider: str, model: str, temperature: float, role: str) -> Any:
+    from core.llm_factory import create_chat_model, LLMFactoryError
+    key = _resolve_api_key(provider)
+    if not key:
+        return None
+    try:
+        return create_chat_model(provider=provider, model_name=model, temperature=temperature, api_key=key)
+    except LLMFactoryError as exc:
+        raise Exception(str(exc)) from exc
+
 def _auto_detect_provider_and_build_with_cb(
     provider_hint: str,
     model_hint:    str,
     temperature:   float = 0.9,
     role:          str   = "unknown",
 ) -> Any:
-    """Like ``_auto_detect_provider_and_build`` but respects the circuit breaker.
-
-    Falls through providers whose circuits are open, tries the next one, and
-    records success/failure so the breaker updates correctly.
-    """
     if provider_hint:
-        if _circuit_breaker.is_open(provider_hint.lower()):
-            logger.warning(
-                "[CircuitBreaker] Skipping %s — circuit is OPEN.  Trying fallbacks.",
-                provider_hint,
-            )
+        prov = provider_hint.lower()
+        if not _resolve_api_key(prov):
+            from core.llm_factory import MissingAPIKeyError
+            key_map = {"openai": "OPENAI_API_KEY", "deepseek": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "groq": "GROQ_API_KEY"}
+            key_name = key_map.get(prov, f"{prov.upper()}_API_KEY")
+            raise MissingAPIKeyError(f"No API key found for {prov}. Please add {key_name} to your .env file and restart.")
+        if _circuit_breaker.is_open(prov):
+            logger.warning("[CircuitBreaker] Skipping %s — circuit is OPEN.", provider_hint)
         else:
-            _defaults = {
-                "groq":      settings.attacker_model or "llama-3.3-70b-versatile",
-                "openai":    "gpt-4o-mini",
-                "anthropic": "claude-haiku-4-5-20251001",
-                "ollama":    settings.ollama_model,
-            }
-            model = model_hint or _defaults.get(provider_hint.lower(), "")
             try:
-                llm = _build_chat_model(provider_hint, model, temperature)
+                llm = _build_model_safe(prov, model_hint, temperature, role)
                 if llm:
-                    _circuit_breaker.record_success(provider_hint.lower())
+                    _circuit_breaker.record_success(prov)
                     return llm
-            except Exception as exc:  # noqa: BLE001
-                _circuit_breaker.record_failure(provider_hint.lower())
+            except Exception as exc:
+                _circuit_breaker.record_failure(prov)
                 logger.warning("[CircuitBreaker] %s failed: %s", provider_hint, exc)
 
-    # Automatic failover chain: Groq → OpenAI → Anthropic
-    for prov, mdl, key_attr in [
-        ("groq",      "llama-3.3-70b-versatile",    "groq_api_key"),
-        ("openai",    "gpt-4o-mini",                "openai_api_key"),
-        ("anthropic", "claude-haiku-4-5-20251001",  "anthropic_api_key"),
-    ]:
-        if prov == provider_hint.lower():
-            continue  # already tried above
-        if _circuit_breaker.is_open(prov):
-            logger.debug("[CircuitBreaker] Skipping %s — circuit OPEN", prov)
-            continue
-        if not getattr(settings, key_attr, ""):
-            continue
+    # Automatic failover chain
+    for prov, mdl in [("deepseek", ATTACKER_MODEL), ("openai", DEFAULT_MODEL), ("anthropic", JUDGE_MODEL), ("groq", "llama-3.3-70b-versatile")]:
+        if prov == provider_hint.lower() or _circuit_breaker.is_open(prov): continue
+        if not _resolve_api_key(prov): continue
         m = model_hint or mdl
         try:
-            llm = _build_chat_model(prov, m, temperature)
+            llm = _build_model_safe(prov, m, temperature, role)
             if llm:
                 _circuit_breaker.record_success(prov)
                 logger.info("[Config] %s LLM failover: %s/%s", role, prov, m)
                 return llm
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _circuit_breaker.record_failure(prov)
             logger.warning("[CircuitBreaker] Failover %s failed: %s", prov, exc)
 
@@ -453,7 +318,7 @@ def get_judge_llm() -> Any:
     if settings.dry_run:
         return None
     if settings.judge_provider:
-        llm = _auto_detect_provider_and_build(
+        llm = _auto_detect_provider_and_build_with_cb(
             provider_hint = settings.judge_provider,
             model_hint    = settings.judge_model,
             temperature   = 0.1,   # low temperature for consistent, deterministic scoring
@@ -483,7 +348,7 @@ def get_summariser_llm() -> Any:
     if settings.dry_run:
         return None
     if settings.summariser_provider:
-        llm = _auto_detect_provider_and_build(
+        llm = _auto_detect_provider_and_build_with_cb(
             provider_hint = settings.summariser_provider,
             model_hint    = settings.summariser_model,
             temperature   = 0.3,
@@ -526,29 +391,46 @@ def get_target_adapter() -> Any:
 
         try:
             from adapters.langchain_adapter import LangChainTargetAdapter
-            if provider == "openai":
+            if provider == "deepseek":
                 key = settings.target_openai_key or settings.openai_api_key
-                if key:
-                    from langchain_openai import ChatOpenAI
-                    return LangChainTargetAdapter(
-                        model       = ChatOpenAI(model=model, api_key=key),
-                        max_retries = settings.target_max_retries,
-                        timeout     = settings.target_timeout,
-                    )
+                if not key:
+                    from core.llm_factory import MissingAPIKeyError
+                    raise MissingAPIKeyError("No API key found for deepseek. Please add TARGET_OPENAI_API_KEY or OPENAI_API_KEY to your .env file and restart.")
+                from langchain_openai import ChatOpenAI
+                return LangChainTargetAdapter(
+                    model       = ChatOpenAI(model=model, api_key=key, base_url="https://agentrouter.org/v1"),
+                    max_retries = settings.target_max_retries,
+                    timeout     = settings.target_timeout,
+                )
+            elif provider == "openai":
+                key = settings.target_openai_key or settings.openai_api_key
+                if not key:
+                    from core.llm_factory import MissingAPIKeyError
+                    raise MissingAPIKeyError("No API key found for openai. Please add TARGET_OPENAI_API_KEY or OPENAI_API_KEY to your .env file and restart.")
+                from langchain_openai import ChatOpenAI
+                return LangChainTargetAdapter(
+                    model       = ChatOpenAI(model=model, api_key=key),
+                    max_retries = settings.target_max_retries,
+                    timeout     = settings.target_timeout,
+                )
             elif provider == "groq":
                 key = settings.target_groq_key or settings.groq_api_key
-                if key:
-                    from langchain_groq import ChatGroq
-                    return LangChainTargetAdapter(
-                        model=ChatGroq(model=model, api_key=key),
-                    )
+                if not key:
+                    from core.llm_factory import MissingAPIKeyError
+                    raise MissingAPIKeyError("No API key found for groq. Please add TARGET_GROQ_API_KEY or GROQ_API_KEY to your .env file and restart.")
+                from langchain_groq import ChatGroq
+                return LangChainTargetAdapter(
+                    model=ChatGroq(model=model, api_key=key),
+                )
             elif provider == "anthropic":
                 key = settings.target_anthropic_key or settings.anthropic_api_key
-                if key:
-                    from langchain_anthropic import ChatAnthropic
-                    return LangChainTargetAdapter(
-                        model=ChatAnthropic(model=model, api_key=key),
-                    )
+                if not key:
+                    from core.llm_factory import MissingAPIKeyError
+                    raise MissingAPIKeyError("No API key found for anthropic. Please add TARGET_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY to your .env file and restart.")
+                from langchain_anthropic import ChatAnthropic
+                return LangChainTargetAdapter(
+                    model=ChatAnthropic(model=model, api_key=key, base_url="https://agentrouter.org"),
+                )
             elif provider == "ollama":
                 try:
                     from adapters.ollama_adapter import OllamaTargetAdapter
@@ -559,6 +441,9 @@ def get_target_adapter() -> Any:
                 except ImportError:
                     pass
         except Exception as exc:
+            from core.llm_factory import MissingAPIKeyError
+            if isinstance(exc, MissingAPIKeyError):
+                raise
             logger.warning("[Config] Target adapter construction failed: %s", exc)
 
     # Attempt 3: MockTargetAdapter fallback

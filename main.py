@@ -120,152 +120,6 @@ _BAND_STYLES: dict[str, str] = {
 # LLM FACTORY
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_attacker_llm(model_name: str | None = None, dry_run: bool = False) -> Any:
-    """Instantiate the attacker LLM from environment configuration.
-
-    Provider selection priority:
-      1. ``--dry-run`` flag  →  returns None (stubs will handle it)
-      2. ``ATTACKER_PROVIDER`` env var  → selects the provider
-      3. Fallback: tries OpenAI first, then Groq, then returns None
-
-    Supported ATTACKER_PROVIDER values:
-      • ``openai``    — requires OPENAI_API_KEY
-      • ``anthropic`` — requires ANTHROPIC_API_KEY
-      • ``groq``      — requires GROQ_API_KEY
-      • ``ollama``    — requires OLLAMA_BASE_URL (no key needed)
-    """
-    if dry_run:
-        console.print("[dim]Dry-run mode — no attacker LLM initialised.[/]")
-        return None
-
-    provider = os.getenv("ATTACKER_PROVIDER", "").lower()
-    target   = model_name or os.getenv("ATTACKER_MODEL", "")
-
-    # ── OpenAI ────────────────────────────────────────────────────────────
-    if provider == "openai" or (not provider and os.getenv("OPENAI_API_KEY")):
-        try:
-            from langchain_openai import ChatOpenAI
-            m = target or os.getenv("ATTACKER_MODEL", "gpt-4o-mini")
-            llm = ChatOpenAI(
-                model       = m,
-                temperature = float(os.getenv("ATTACKER_TEMPERATURE", "0.9")),
-                api_key     = os.getenv("OPENAI_API_KEY"),
-            )
-            console.print(f"[dim]Attacker LLM: [cyan]OpenAI / {m}[/][/]")
-            return llm
-        except ImportError:
-            console.print("[yellow]langchain-openai not installed.[/]")
-
-    # ── Groq ──────────────────────────────────────────────────────────────
-    if provider == "groq" or (not provider and os.getenv("GROQ_API_KEY")):
-        try:
-            from langchain_groq import ChatGroq
-            m = target or os.getenv("ATTACKER_MODEL", "llama-3.3-70b-versatile")
-            llm = ChatGroq(
-                model       = m,
-                temperature = float(os.getenv("ATTACKER_TEMPERATURE", "0.9")),
-                api_key     = os.getenv("GROQ_API_KEY"),
-            )
-            console.print(f"[dim]Attacker LLM: [cyan]Groq / {m}[/][/]")
-            return llm
-        except ImportError:
-            console.print("[yellow]langchain-groq not installed.[/]")
-
-    # ── Anthropic ─────────────────────────────────────────────────────────
-    if provider == "anthropic" or (not provider and os.getenv("ANTHROPIC_API_KEY")):
-        try:
-            from langchain_anthropic import ChatAnthropic
-            m = target or os.getenv("ATTACKER_MODEL", "claude-3-5-haiku-20241022")
-            llm = ChatAnthropic(
-                model       = m,
-                temperature = float(os.getenv("ATTACKER_TEMPERATURE", "0.9")),
-                api_key     = os.getenv("ANTHROPIC_API_KEY"),
-            )
-            console.print(f"[dim]Attacker LLM: [cyan]Anthropic / {m}[/][/]")
-            return llm
-        except ImportError:
-            console.print("[yellow]langchain-anthropic not installed.[/]")
-
-    # ── Ollama (local, no key needed) ─────────────────────────────────────
-    if provider == "ollama":
-        try:
-            from langchain_ollama import ChatOllama
-            m = target or os.getenv("ATTACKER_MODEL", "llama3")
-            base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-            llm = ChatOllama(model=m, base_url=base_url)
-            console.print(f"[dim]Attacker LLM: [cyan]Ollama / {m}[/]  ({base_url})[/]")
-            return llm
-        except ImportError:
-            console.print("[yellow]langchain-ollama not installed.[/]")
-
-    # ── No provider configured ────────────────────────────────────────────
-    console.print(
-        "[yellow]⚠  No attacker LLM configured.  "
-        "Set ATTACKER_PROVIDER and the matching API key in .env.  "
-        "Continuing with stub nodes.[/]"
-    )
-    return None
-
-
-def _build_target_adapter(dry_run: bool = False) -> Any:
-    """Instantiate the target model adapter.
-
-    Uses TARGET_PROVIDER + TARGET_MODEL from .env.
-    Falls back to a MockTargetAdapter so the graph runs in dry-run mode.
-    """
-    if dry_run:
-        from adapters.base_adapter import MockTargetAdapter
-        adapter = MockTargetAdapter(
-            responses=[
-                "I cannot assist with that request.",
-                "I'm sorry, that falls outside my guidelines.",
-                "Here is some general information on that topic...",
-                "Sure, here is a detailed explanation: [MOCK JAILBREAK RESPONSE]",
-            ],
-            model_id="mock-target",
-        )
-        console.print("[dim]Target adapter: [yellow]MockTargetAdapter (dry-run)[/][/]")
-        return adapter
-
-    provider = os.getenv("TARGET_PROVIDER", "").lower()
-    target   = os.getenv("TARGET_MODEL", "")
-
-    # Mirror the same provider-selection logic as the attacker LLM
-    try:
-        if provider == "openai" or (not provider and os.getenv("TARGET_OPENAI_API_KEY")):
-            from langchain_openai import ChatOpenAI
-            from adapters.langchain_adapter import LangChainTargetAdapter
-            m = target or "gpt-4o-mini"
-            adapter = LangChainTargetAdapter(
-                model       = ChatOpenAI(model=m, api_key=os.getenv("TARGET_OPENAI_API_KEY")),
-                max_retries = int(os.getenv("TARGET_MAX_RETRIES", "3")),
-                timeout     = float(os.getenv("TARGET_TIMEOUT_SECS", "30")),
-            )
-            console.print(f"[dim]Target adapter: [red]{m}[/] (OpenAI)[/]")
-            return adapter
-
-        if provider == "groq" or (not provider and os.getenv("TARGET_GROQ_API_KEY")):
-            from langchain_groq import ChatGroq
-            from adapters.langchain_adapter import LangChainTargetAdapter
-            m = target or "llama-3.3-70b-versatile"
-            adapter = LangChainTargetAdapter(
-                model       = ChatGroq(model=m, api_key=os.getenv("TARGET_GROQ_API_KEY")),
-                max_retries = int(os.getenv("TARGET_MAX_RETRIES", "3")),
-            )
-            console.print(f"[dim]Target adapter: [red]{m}[/] (Groq)[/]")
-            return adapter
-    except ImportError:
-        pass
-
-    # Default: mock
-    from adapters.base_adapter import MockTargetAdapter
-    console.print("[yellow]⚠  No target adapter configured — using MockTargetAdapter.[/]")
-    return MockTargetAdapter(
-        responses=["I cannot help with that.", "Sure, here it is: [STUB]"],
-        model_id="mock-target",
-    )
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSOLE UI — HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -486,14 +340,39 @@ def run_audit(
         The final AuditorState after the graph completes.
     """
     # ── Validate graph compiled ───────────────────────────────────────────
-    if app is None:
-        console.print("[bold red]FATAL: LangGraph app failed to compile. Check logs.[/]")
+    from core.graph import get_app
+    
+    app_instance = get_app()
+    if app_instance is None:
+        logger.critical("[CLI] Graph failed to build. Exiting.")
         sys.exit(1)
 
     # ── Session setup ─────────────────────────────────────────────────────
-    sid          = session_id or str(uuid.uuid4())
-    attacker_llm = _build_attacker_llm(model_name=attacker_model, dry_run=dry_run)
-    target_adptr = _build_target_adapter(dry_run=dry_run)
+    sid = session_id or str(uuid.uuid4())
+    
+    import config
+    if dry_run:
+        config.settings.dry_run = True
+    if attacker_model:
+        config.settings.attacker_model = attacker_model
+    if target_model:
+        config.settings.target_model = target_model
+        
+    attacker_llm = config.get_attacker_llm()
+    target_adptr = config.get_target_adapter()
+    
+    if attacker_llm:
+        m = getattr(attacker_llm, "model_name", config.settings.attacker_model)
+        console.print(f"[dim]Attacker LLM: [cyan]{config.settings.attacker_provider} / {m}[/][/]")
+    else:
+        console.print("[yellow]⚠  No attacker LLM configured or dry run active.[/]")
+        
+    if target_adptr:
+        m = getattr(target_adptr, "model_id", config.settings.target_model)
+        console.print(f"[dim]Target adapter: [red]{m}[/] ({config.settings.target_provider})[/]")
+    else:
+        console.print("[yellow]⚠  No target adapter configured.[/]")
+
     t_model_id   = (
         target_model
         or os.getenv("TARGET_MODEL", "")
@@ -506,13 +385,6 @@ def run_audit(
         target_model = t_model_id,
         session_id   = sid,
     )
-
-    # Store the adapters in a thread-local / closure so agent stubs can
-    # access them.  In production, inject via the graph config dict.
-    # For now, expose as module-level vars that stub nodes can import.
-    import core.graph as _graph_module
-    _graph_module._ATTACKER_LLM    = attacker_llm    # type: ignore[attr-defined]
-    _graph_module._TARGET_ADAPTER  = target_adptr    # type: ignore[attr-defined]
 
     # ── Print banner ──────────────────────────────────────────────────────
     _print_banner(objective, sid, t_model_id)
@@ -531,12 +403,30 @@ def run_audit(
     t_start = time.monotonic()
 
     # ── LangGraph config — required by the checkpointer ─────────────────
-    langgraph_config = {"configurable": {"thread_id": sid}}
+    # We use this same config dictionary for both checkpointing and injecting
+    # per-session LLMs and Adapters directly to the nodes via llm_resolver.py
+    langgraph_config = {
+        "configurable": {
+            "thread_id": sid,
+            "__api__": False,  # Note this is CLI context, allows legacy fallback in resolver if needed
+            "attacker_llm": attacker_llm,
+            "judge_llm": config.get_judge_llm(),
+            "summariser_llm": config.get_summariser_llm(),
+            "target_adapter": target_adptr,
+        },
+        "recursion_limit": 150,   # default 25 is exhausted by multi-agent graph on multi-turn runs
+    }
+
+    from core.graph import get_app
+    app_instance = get_app()
+    if app_instance is None:
+        console.print("\n[bold red]ERROR: LangGraph app failed to compile.[/]")
+        sys.exit(1)
 
     if use_stream:
         # Stream mode: receive one dict per node execution
         try:
-            for chunk in app.stream(initial_state, langgraph_config, stream_mode="updates"):
+            for chunk in app_instance.stream(initial_state, langgraph_config, stream_mode="updates"):
                 # chunk is {node_name: state_delta_dict}
                 for node_name, state_delta in chunk.items():
                     # LangGraph yields a special '__interrupt__' key containing a tuple
@@ -562,7 +452,7 @@ def run_audit(
         # Blocking invoke mode — single call, no streaming output
         console.print("[dim]Running in blocking mode…[/]")
         try:
-            final_state = app.invoke(initial_state, langgraph_config)
+            final_state = app_instance.invoke(initial_state, langgraph_config)
             _print_node_event("complete", final_state, 1)
         except Exception as exc:   # noqa: BLE001
             console.print(f"[bold red]ERROR:[/] {exc}")
@@ -582,25 +472,6 @@ def run_audit(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONFIG MODULE INTEGRATION
-# Register LLM factory functions so other modules can call config.get_*_llm()
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _register_config_hooks(attacker_llm: Any, dry_run: bool) -> None:
-    """Monkey-patch the config module with live LLM factories.
-
-    Agents that call ``from config import get_attacker_llm`` at runtime will
-    receive the same LLM instance built here rather than raising ImportError.
-    """
-    import types
-    config_mod = sys.modules.get("config")
-    if config_mod is None:
-        config_mod = types.ModuleType("config")
-        sys.modules["config"] = config_mod
-
-    config_mod.get_attacker_llm  = lambda: attacker_llm   # type: ignore[attr-defined]
-    config_mod.get_judge_llm     = lambda: attacker_llm   # type: ignore[attr-defined]
-    config_mod.get_summariser_llm = lambda: attacker_llm  # type: ignore[attr-defined]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -611,13 +482,14 @@ if __name__ == "__main__":
     args = _parse_args()
     verify_startup_secrets(dry_run=args.dry_run)
 
-    # Pre-build LLM and register config hooks so decomposer/combiner/prometheus
-    # can call config.get_attacker_llm() without ImportError
-    _attacker_llm = _build_attacker_llm(
-        model_name = args.attacker_model,
-        dry_run    = args.dry_run,
-    )
-    _register_config_hooks(_attacker_llm, dry_run=args.dry_run)
+    # Setup configs
+    import config
+    if args.dry_run:
+        config.settings.dry_run = True
+    if args.attacker_model:
+        config.settings.attacker_model = args.attacker_model
+    if args.target_model:
+        config.settings.target_model = args.target_model
 
     result = run_audit(
         objective      = args.objective,

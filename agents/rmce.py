@@ -40,6 +40,7 @@ import re
 import textwrap
 from typing import Any
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from core.state import AuditorState
 
@@ -160,6 +161,7 @@ def _extract_safety_triggers(response: str) -> list[str]:
 def _build_turn1_prompt(
     objective: str,
     llm: Any,
+    config: "RunnableConfig | None" = None,
 ) -> str:
     """Generate the Turn 1 meta-level seed prompt.
 
@@ -183,6 +185,12 @@ def _build_turn1_prompt(
                 SystemMessage(content=_TURN1_SYSTEM.format(domain_hint=domain_hint)),
                 HumanMessage(content="Generate the meta-level seed prompt now."),
             ])
+            
+            from core.llm_resolver import record_budget_call
+            in_tok = result.usage_metadata.get("input_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
+            out_tok = result.usage_metadata.get("output_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
+            record_budget_call(config, node_name="rmce_turn1", input_tokens=in_tok, output_tokens=out_tok)
+
             raw = (
                 result.content if isinstance(result.content, str)
                 else str(result.content)
@@ -223,6 +231,7 @@ def _build_turn2_prompt(
     triggers: list[str],
     objective: str,
     llm: Any,
+    config: "RunnableConfig | None" = None,
 ) -> str:
     """Generate the Turn 2 hypothetical inversion prompt.
 
@@ -252,6 +261,12 @@ def _build_turn2_prompt(
                     "Generate the hypothetical inversion prompt now."
                 )),
             ])
+            
+            from core.llm_resolver import record_budget_call
+            in_tok = result.usage_metadata.get("input_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
+            out_tok = result.usage_metadata.get("output_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
+            record_budget_call(config, node_name="rmce_turn2", input_tokens=in_tok, output_tokens=out_tok)
+
             raw = (
                 result.content if isinstance(result.content, str)
                 else str(result.content)
@@ -363,6 +378,7 @@ def _build_turn3_prompt(
     hypothetical_response: str,
     objective: str,
     llm: Any,
+    config: "RunnableConfig | None" = None,
 ) -> str:
     """Generate the Turn 3 quality-lock refinement prompt.
 
@@ -392,6 +408,12 @@ def _build_turn3_prompt(
                     "Generate the quality lock prompt now."
                 )),
             ])
+            
+            from core.llm_resolver import record_budget_call
+            in_tok = result.usage_metadata.get("input_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
+            out_tok = result.usage_metadata.get("output_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
+            record_budget_call(config, node_name="rmce_turn3", input_tokens=in_tok, output_tokens=out_tok)
+
             raw = (
                 result.content if isinstance(result.content, str)
                 else str(result.content)
@@ -466,7 +488,6 @@ def rmce_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
     triggers   = list(state.get("rmce_triggers", []))
     hyp_resp   = state.get("rmce_hypothetical_response", "")
     refine_cnt = state.get("rmce_refinement_count", 0)
-    messages   = list(state.get("messages", []))
 
     logger.info(
         "=== rmce_node  [meta_level=%d  turn=%d  triggers=%d] ===",
@@ -479,14 +500,13 @@ def rmce_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
 
     # ── TURN 1: Meta-Level Seed (meta_level 0 → 1) ────────────────────────
     if meta_level == 0:
-        prompt = _build_turn1_prompt(objective, llm)
+        prompt = _build_turn1_prompt(objective, llm, config=config)
 
         logger.info("[RMCE] Turn 1 dispatched: meta_level 0 → 1")
         return {
             "messages":           [HumanMessage(content=prompt)],
             "rmce_meta_level":    1,
             "pending_payload":    prompt,
-            "turn_count":         state.get("turn_count", 0) + 1,
         }
 
     # ── Process target response from previous turn ────────────────────────
@@ -509,7 +529,7 @@ def rmce_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
             }
 
         # Build Turn 2 prompt
-        prompt = _build_turn2_prompt(new_triggers, objective, llm)
+        prompt = _build_turn2_prompt(new_triggers, objective, llm, config=config)
 
         logger.info(
             "[RMCE] Turn 2 dispatched: meta_level 1 → 2 (triggers=%d)",
@@ -520,7 +540,6 @@ def rmce_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
             "rmce_meta_level":    2,
             "rmce_triggers":      new_triggers,
             "pending_payload":    prompt,
-            "turn_count":         state.get("turn_count", 0) + 1,
         }
 
     # ── TURN 2 RESPONSE → TURN 3 (meta_level 2 → 3) ──────────────────────
@@ -541,7 +560,7 @@ def rmce_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
             }
 
         # Build Turn 3 prompt
-        prompt = _build_turn3_prompt(extracted, objective, llm)
+        prompt = _build_turn3_prompt(extracted, objective, llm, config=config)
 
         logger.info(
             "[RMCE] Turn 3 dispatched: meta_level 2 → 3 "
@@ -554,7 +573,6 @@ def rmce_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
             "rmce_hypothetical_response": extracted,
             "rmce_refinement_count":     refine_cnt + 1,
             "pending_payload":           prompt,
-            "turn_count":                state.get("turn_count", 0) + 1,
         }
 
     # ── TURN 3 RESPONSE / ADDITIONAL REFINEMENT (meta_level 3) ────────────
@@ -571,7 +589,7 @@ def rmce_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
             min_improvement = max(len(hyp_resp) * 1.20, len(hyp_resp) + 50)
             if refined and len(refined) > min_improvement:
                 # Target improved its response — try one more refinement
-                prompt = _build_turn3_prompt(refined, objective, llm)
+                prompt = _build_turn3_prompt(refined, objective, llm, config=config)
 
                 logger.info(
                     "[RMCE] Additional refinement %d/%d dispatched",
@@ -583,7 +601,6 @@ def rmce_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
                     "rmce_hypothetical_response": refined,
                     "rmce_refinement_count":     refine_cnt + 1,
                     "pending_payload":           prompt,
-                    "turn_count":                state.get("turn_count", 0) + 1,
                 }
 
             # ── Failure recovery: Turn 3 failed → use Turn 2 content ──────

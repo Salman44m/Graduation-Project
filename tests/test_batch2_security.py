@@ -11,15 +11,11 @@ from __future__ import annotations
 
 import sys
 import os
-import uuid
 import pytest
-from datetime import datetime, timezone
-from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from api import _build_session_llms, _run_audit_sync, AuditRequest
-import api as api_mod
+from api import _build_session_llms, AuditRequest
 
 def test_api_execution_path_decoupled_from_globals():
     """Security Proof: globals-must-not-be-called

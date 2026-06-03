@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  promptevo-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: promptevo-api:latest
+    container_name: promptevo-api
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - REDIS_URL=redis://redis:6379/0
+      # Pass through required credentials (should be provided in .env)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+    env_file:
+      - .env
+    volumes:
+      - promptevo_data:/app/data
+      - promptevo_reports:/app/reports
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: promptevo-redis
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
+volumes:
+  promptevo_data:
+  promptevo_reports:
+  redis_data:

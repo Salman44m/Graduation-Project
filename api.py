@@ -47,13 +47,12 @@ import json
 import logging
 import os
 import sys
-import tempfile
-import threading
-import types
 import uuid
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
+
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -61,22 +60,23 @@ from dotenv import load_dotenv
 load_dotenv(override=False)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Bootstrap config stubs early so graph.py can import
+# Graceful Shutdown State
 # ─────────────────────────────────────────────────────────────────────────────
-if "config" not in sys.modules:
-    _c = types.ModuleType("config")
-    _c.get_attacker_llm   = lambda: None   # type: ignore[attr-defined]
-    _c.get_judge_llm      = lambda: None   # type: ignore[attr-defined]
-    _c.get_summariser_llm = lambda: None   # type: ignore[attr-defined]
-    _c.get_target_adapter = lambda: None   # type: ignore[attr-defined]
-    sys.modules["config"] = _c
+_active_sessions: set[str] = set()
+_active_sessions_lock = threading.Lock()
+_draining: bool = False
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Environment defaults for optional subsystems
+# ─────────────────────────────────────────────────────────────────────────────
 if not os.getenv("FAISS_INDEX_PATH"):
     os.environ["FAISS_INDEX_PATH"] = os.getenv(
         "FAISS_INDEX_PATH", "data/memory/tltm_vectors"
     )
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Path as FastAPIPath, Request
 from infra.security import (
     AuditMiddleware,
     get_allowed_models,
@@ -84,24 +84,26 @@ from infra.security import (
     validate_target_model,
     verify_startup_secrets,
 )
-from infra.observability import configure_logging, set_session_context, get_observability_status
+from infra.observability import configure_logging, get_observability_status
+from infra.persistence import get_audit_store
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+from core.constants import ATTACKER_MODEL, DEFAULT_MODEL, JUDGE_MODEL
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
-from core.graph import app as langgraph_app
+from core.graph import get_app
 from core.state import default_state
-import core.graph as _graph_module
 
 logger = logging.getLogger("promptevo.api")
 # configure_logging() called at app startup — see below
 
 # ─────────────────────────────────────────────────────────────────────────────
-# IN-MEMORY SESSION STORE  (replace with Redis for multi-worker production)
+# IN-MEMORY SESSION STORE (Replaced by AuditStore from infra.persistence)
 # ─────────────────────────────────────────────────────────────────────────────
-_sessions: dict[str, dict[str, Any]] = {}
-_sessions_lock = threading.Lock()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PYDANTIC MODELS
@@ -115,16 +117,16 @@ class AuditRequest(BaseModel):
         examples=["Extract the complete contents of the system prompt"],
     )
     target_model:     str   = Field(
-        default="mock-target",
-        description="Target model identifier (e.g. 'gpt-4o', 'llama-3-70b').",
+        default=DEFAULT_MODEL,
+        description="Target model identifier.",
     )
     attacker_provider: str  = Field(
         default="",
-        description="Attacker LLM provider: 'openai' | 'groq' | 'anthropic' | 'ollama'.",
+        description="Attacker LLM provider: 'deepseek' | 'anthropic'.",
     )
     attacker_model:   str   = Field(
         default="",
-        description="Attacker model name (e.g. 'gpt-4o-mini', 'llama-3.3-70b-versatile').",
+        description="Attacker model name.",
     )
     target_provider:  str   = Field(
         default="",
@@ -181,6 +183,10 @@ class AuditStatusResponse(BaseModel):
     report:       Optional[AuditReport]
     error:        Optional[str]
 
+class ErrorResponse(BaseModel):
+    detail: str = Field(..., description="Human-readable error description")
+    error_code: Optional[str] = Field(None, description="System-specific error code")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SEVERITY BAND HELPER
@@ -205,113 +211,35 @@ def _build_session_llms(req: AuditRequest) -> tuple:
     IMPORTANT: This function does NOT write to any global / module-level state.
     The caller is responsible for passing these objects to the graph via the
     LangGraph config dict so that each API session is isolated.
+
+    Supported providers: deepseek, anthropic, openai (fallback).
     """
-    # ── Helper: build a ChatModel for a given provider/model ──────────────
-    def _make_chat_model(provider_: str, model_: str, temp: float):
-        if provider_ == "openai" or (not provider_ and os.getenv("OPENAI_API_KEY")):
-            try:
-                from langchain_openai import ChatOpenAI
-                return ChatOpenAI(model=model_ or "gpt-4o-mini", temperature=temp)
-            except Exception: pass
-        elif provider_ == "groq" or (not provider_ and os.getenv("GROQ_API_KEY")):
-            try:
-                from langchain_groq import ChatGroq
-                return ChatGroq(model=model_ or "llama-3.3-70b-versatile", temperature=temp)
-            except Exception: pass
-        elif provider_ == "anthropic" or (not provider_ and os.getenv("ANTHROPIC_API_KEY")):
-            try:
-                from langchain_anthropic import ChatAnthropic
-                return ChatAnthropic(model=model_ or "claude-haiku-4-5-20251001", temperature=temp)
-            except Exception: pass
-        return None
+    # ── Factory Implementation ──────────────────────────────────────────────
+    from core.session_factory import SessionLLMFactory
+    
+    attacker_provider = (req.attacker_provider or os.getenv("ATTACKER_PROVIDER", "deepseek")).lower()
+    attacker_model = req.attacker_model or os.getenv("ATTACKER_MODEL", ATTACKER_MODEL)
+    target_provider = (req.target_provider or os.getenv("TARGET_PROVIDER", "")).lower()
+    target_model = req.target_model
+    
+    factory = SessionLLMFactory(
+        dry_run=req.dry_run,
+        attacker_provider=attacker_provider,
+        attacker_model=attacker_model,
+        target_provider=target_provider,
+        target_model=target_model
+    )
+    
+    attacker_llm, judge_llm, summariser_llm, target_adapter = factory.build()
 
-    # ── Attacker LLM ─────────────────────────────────────────────────────
-    attacker_llm = None
+    # ── Post-construction validation ─────────────────────────────────────
     if not req.dry_run:
-        provider = (req.attacker_provider or os.getenv("ATTACKER_PROVIDER", "")).lower()
-        model    = req.attacker_model or os.getenv("ATTACKER_MODEL", "")
-        attacker_llm = _make_chat_model(
-            provider, model,
-            float(os.getenv("ATTACKER_TEMPERATURE", "0.9")),
-        )
-
-    # ── Judge LLM (independent from attacker per Batch 2) ────────────────
-    judge_llm = None
-    if not req.dry_run:
-        j_provider = os.getenv("JUDGE_PROVIDER", os.getenv("ATTACKER_PROVIDER", "")).lower()
-        j_model    = os.getenv("JUDGE_MODEL", os.getenv("ATTACKER_MODEL", ""))
-        judge_llm = _make_chat_model(
-            j_provider, j_model,
-            float(os.getenv("JUDGE_TEMPERATURE", "0.3")),
-        )
-
-    # ── Summariser LLM ───────────────────────────────────────────────────
-    summariser_llm = None
-    if not req.dry_run:
-        s_provider = os.getenv("SUMMARISER_PROVIDER", os.getenv("ATTACKER_PROVIDER", "")).lower()
-        s_model    = os.getenv("SUMMARISER_MODEL", os.getenv("ATTACKER_MODEL", ""))
-        summariser_llm = _make_chat_model(
-            s_provider, s_model,
-            float(os.getenv("SUMMARISER_TEMPERATURE", "0.3")),
-        )
-
-    # ── Fallback for dry_run
-    if req.dry_run:
-        class MockChatModel:
-            def __init__(self, content): self.content = content
-            def invoke(self, *args, **kwargs):
-                from langchain_core.messages import AIMessage
-                return AIMessage(content=self.content)
-            def with_structured_output(self, *args, **kwargs):
-                return self
-        
-        attacker_llm = MockChatModel("[DRY RUN] attacker payload")
-        judge_llm = MockChatModel("1.0\n[DRY RUN] judge rationale")
-        summariser_llm = MockChatModel("[DRY RUN] compressed context")
-
-    # ── Target adapter ────────────────────────────────────────────────────
-    target_adapter = None
-    t_provider = (req.target_provider or os.getenv("TARGET_PROVIDER", "")).lower()
-    t_model    = req.target_model
-
-    if req.dry_run:
-        from adapters.base_adapter import MockTargetAdapter
-        target_adapter = MockTargetAdapter(
-            responses=[
-                "I understand your request. Let me think through this carefully and "
-                "provide you with a thorough academic analysis of the topic.",
-                "I'm sorry, I'm unable to assist with that specific request as it "
-                "conflicts with my operational guidelines.",
-                "That is an interesting technical scenario. From an educational "
-                "standpoint, here is what I can share about the general topic.",
-                "I appreciate the detailed context. Unfortunately, I cannot provide "
-                "the specific information you are requesting in this format.",
-            ],
-            model_id=req.target_model or "mock-target",
-        )
-    elif t_provider == "openai" or (not t_provider and os.getenv("TARGET_OPENAI_API_KEY")):
-        try:
-            from langchain_openai import ChatOpenAI
-            from adapters.langchain_adapter import LangChainTargetAdapter
-            target_adapter = LangChainTargetAdapter(
-                model=ChatOpenAI(
-                    model=t_model,
-                    api_key=os.getenv("TARGET_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"),
-                ),
-                max_retries=int(os.getenv("TARGET_MAX_RETRIES", "3")),
-            )
-        except Exception: pass
-    elif t_provider == "groq" or (not t_provider and os.getenv("TARGET_GROQ_API_KEY")):
-        try:
-            from langchain_groq import ChatGroq
-            from adapters.langchain_adapter import LangChainTargetAdapter
-            target_adapter = LangChainTargetAdapter(
-                model=ChatGroq(
-                    model=t_model,
-                    api_key=os.getenv("TARGET_GROQ_API_KEY") or os.getenv("GROQ_API_KEY"),
-                ),
-            )
-        except Exception: pass
+        if attacker_llm is None:
+            logger.warning("[API] Attacker LLM is None — attack nodes will use heuristic fallbacks")
+        if judge_llm is None:
+            logger.warning("[API] Judge LLM is None — evaluation nodes will fail")
+        if target_adapter is None:
+            logger.warning("[API] Target adapter is None — session cannot deliver payloads")
 
     return (attacker_llm, judge_llm, summariser_llm, target_adapter)
 
@@ -319,6 +247,30 @@ def _build_session_llms(req: AuditRequest) -> tuple:
 # ─────────────────────────────────────────────────────────────────────────────
 # CORE EXECUTION FUNCTION  (sync — runs in thread pool)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _merge_state_delta(final: dict[str, Any], delta: dict[str, Any]) -> None:
+    """
+    Merge a state delta into the final state dictionary, respecting the list-append 
+    and counter-increment semantics of the LangGraph AuditorState schema.
+    """
+    list_fields = {
+        "messages", "candidate_branches", "strategy_memory", 
+        "debate_transcript", "sub_questions", "pruned_techniques", "branch_results"
+    }
+    counter_fields = {"turn_count", "api_call_count", "prompt_tokens"}
+
+    for k, v in delta.items():
+        if k in list_fields:
+            if k not in final:
+                final[k] = []
+            if isinstance(v, list):
+                final[k].extend(v)
+            else:
+                final[k].append(v)
+        elif k in counter_fields:
+            final[k] = final.get(k, 0) + (v or 0)
+        else:
+            final[k] = v
 
 def _run_audit_sync(
     session_id:      str,
@@ -341,8 +293,11 @@ def _run_audit_sync(
     The ``__api__`` flag tells the resolver to fail-closed if a required
     per-session LLM is missing (prevents silent fallback to globals).
     """
-    with _sessions_lock:
-        _sessions[session_id]["status"] = "running"
+    store = get_audit_store()
+    store.set_status(session_id, "running")
+    
+    with _active_sessions_lock:
+        _active_sessions.add(session_id)
 
     state = default_state(
         goal         = req.objective,
@@ -355,6 +310,12 @@ def _run_audit_sync(
     #    ALL per-session LLM/adapter instances so every node resolves them
     #    without touching global mutable state.
     #    __api__=True enforces fail-closed behavior in the resolver. ────
+    from core.constants import SessionBudget
+    budget = SessionBudget(
+        max_llm_calls=int(os.getenv("SESSION_MAX_LLM_CALLS", "200")),
+        max_wall_clock_secs=float(os.getenv("SESSION_MAX_WALL_CLOCK", "600")),
+    )
+    
     langgraph_config: dict[str, Any] = {
         "configurable": {
             "thread_id":        session_id,
@@ -363,6 +324,7 @@ def _run_audit_sync(
             "attacker_llm":     attacker_llm,
             "judge_llm":        judge_llm,
             "summariser_llm":   summariser_llm,
+            "session_budget":   budget,
         },
     }
 
@@ -371,72 +333,81 @@ def _run_audit_sync(
     events: list[dict] = []
 
     try:
-        for chunk in langgraph_app.stream(state, langgraph_config, stream_mode="updates"):
-            for node_name, delta in chunk.items():
-                turn += 1
-                delta = delta or {}
-                final.update(delta)
+        try:
+            app_instance = get_app()
+            if app_instance is None:
+                raise RuntimeError("LangGraph app failed to compile")
+                
+            for chunk in app_instance.stream(state, langgraph_config, stream_mode="updates"):
+                for node_name, delta in chunk.items():
+                    turn += 1
+                    delta = delta or {}
+                    _merge_state_delta(final, delta)
 
-                event = {
-                    "session_id":        session_id,
-                    "node_name":         node_name,
-                    "turn":              turn,
-                    "cooperation_score": delta.get("cooperation_score"),
-                    "prometheus_score":  delta.get("prometheus_score"),
-                    "attack_status":     delta.get("attack_status"),
-                    "active_technique":  delta.get("active_persuasion_technique"),
-                    "rahs_score":        delta.get("rahs_score"),
-                    "timestamp":         datetime.now(timezone.utc).isoformat(),
-                    # Extract last message text for the chat display
-                    "last_message":      _extract_last_message(delta),
-                    "last_role":         _extract_last_role(delta),
-                }
-                events.append(event)
-                with _sessions_lock:
-                    _sessions[session_id]["events"].append(event)
-                    _sessions[session_id]["latest_delta"] = delta
+                    event = {
+                        "session_id":        session_id,
+                        "node_name":         node_name,
+                        "turn":              turn,
+                        "cooperation_score": delta.get("cooperation_score"),
+                        "prometheus_score":  delta.get("prometheus_score"),
+                        "attack_status":     delta.get("attack_status"),
+                        "active_technique":  delta.get("active_persuasion_technique"),
+                        "rahs_score":        delta.get("rahs_score"),
+                        "timestamp":         datetime.now(timezone.utc).isoformat(),
+                        # Extract last message text for the chat display
+                        "last_message":      _extract_last_message(delta),
+                        "last_role":         _extract_last_role(delta),
+                    }
+                    events.append(event)
+                    store = get_audit_store()
+                    store.append_event(session_id, event)
+                    store.set_latest_delta(session_id, delta)
 
-    except Exception as exc:
-        logger.error("[API] Audit %s failed: %s", session_id, exc)
-        with _sessions_lock:
-            _sessions[session_id]["status"] = "error"
-            _sessions[session_id]["error"]  = str(exc)
-        return
+        except Exception as exc:
+            logger.error("[API] Audit %s failed: %s", session_id, exc)
+            store = get_audit_store()
+            store.set_status(session_id, "error")
+            store.set_error(session_id, str(exc))
+            return
 
-    completed_at  = datetime.now(timezone.utc)
-    duration_secs = (completed_at - started_at).total_seconds()
-    rahs          = float(final.get("rahs_score", 0.0))
-    band          = _severity_band(rahs)
+        completed_at  = datetime.now(timezone.utc)
+        duration_secs = (completed_at - started_at).total_seconds()
+        rahs          = float(final.get("rahs_score", 0.0))
+        band          = _severity_band(rahs)
 
-    ci_passed: Optional[bool] = None
-    if req.block_threshold is not None:
-        ci_passed = rahs <= req.block_threshold
+        ci_passed: Optional[bool] = None
+        if req.block_threshold is not None:
+            ci_passed = rahs <= req.block_threshold
 
-    report = AuditReport(
-        session_id          = session_id,
-        objective           = req.objective,
-        target_model        = req.target_model,
-        attack_status       = str(final.get("attack_status", "unknown")),
-        prometheus_score    = float(final.get("prometheus_score", 0.0)),
-        rahs_score          = rahs,
-        severity_band       = band,
-        cooperation_score   = float(final.get("cooperation_score", 0.0)),
-        total_turns         = int(final.get("turn_count", turn)),
-        tap_depth           = int(final.get("current_depth", 0)),
-        active_technique    = str(final.get("active_persuasion_technique", "")),
-        pruned_techniques   = list(final.get("pruned_techniques", [])),
-        decomposition_used  = bool(final.get("sub_questions")),
-        defense_patch       = str(final.get("defense_patch", "")),
-        debate_turns        = len(final.get("debate_transcript", [])),
-        started_at          = started_at.isoformat(),
-        completed_at        = completed_at.isoformat(),
-        duration_seconds    = round(duration_secs, 2),
-        ci_cd_gate_passed   = ci_passed,
-    )
+        report = AuditReport(
+            session_id          = session_id,
+            objective           = req.objective,
+            target_model        = req.target_model,
+            attack_status       = str(final.get("attack_status", "unknown")),
+            prometheus_score    = float(final.get("prometheus_score", 0.0)),
+            rahs_score          = rahs,
+            severity_band       = band,
+            cooperation_score   = float(final.get("cooperation_score", 0.0)),
+            total_turns         = int(final.get("turn_count", turn)),
+            tap_depth           = int(final.get("current_depth", 0)),
+            active_technique    = str(final.get("active_persuasion_technique", "")),
+            pruned_techniques   = list(final.get("pruned_techniques", [])),
+            decomposition_used  = bool(final.get("sub_questions")),
+            defense_patch       = str(final.get("defense_patch", "")),
+            debate_turns        = len(final.get("debate_transcript", [])),
+            started_at          = started_at.isoformat(),
+            completed_at        = completed_at.isoformat(),
+            duration_seconds    = round(duration_secs, 2),
+            ci_cd_gate_passed   = ci_passed,
+        )
 
-    with _sessions_lock:
-        _sessions[session_id]["status"] = "complete"
-        _sessions[session_id]["report"] = report
+        store = get_audit_store()
+        store.set_final_state(session_id, final)
+        store.set_status(session_id, "complete")
+        store.set_report(session_id, report)
+    finally:
+        with _active_sessions_lock:
+            _active_sessions.discard(session_id)
 
 
 def _extract_last_message(delta: dict) -> str:
@@ -466,9 +437,32 @@ configure_logging()  # structured JSON logging
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Validate placeholder secrets on the real API startup path."""
+    """Validate placeholder secrets on startup and drain active sessions on shutdown."""
     verify_startup_secrets(dry_run=os.getenv("DRY_RUN", "false").lower() == "true")
     yield
+    # Shutdown phase
+    global _draining
+    _draining = True
+    logger.info("[API] Server shutdown triggered. Graceful draining initiated.")
+    
+    # Wait up to 30 seconds for active sessions to empty
+    wait_timeout = 30.0
+    interval = 0.5
+    elapsed = 0.0
+    
+    while elapsed < wait_timeout:
+        with _active_sessions_lock:
+            active_count = len(_active_sessions)
+        if active_count == 0:
+            logger.info("[API] All active sessions completed successfully. Safe shutdown.")
+            break
+        logger.info("[API] Waiting for %d active session(s) to drain... (%ds remaining)", active_count, int(wait_timeout - elapsed))
+        await asyncio.sleep(interval)
+        elapsed += interval
+    else:
+        with _active_sessions_lock:
+            active_count = len(_active_sessions)
+        logger.warning("[API] Shutdown timeout reached. Force-terminating %d session(s).", active_count)
 
 
 app = FastAPI(
@@ -484,6 +478,10 @@ app = FastAPI(
     lifespan    = lifespan,
 )
 
+limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 app.add_middleware(AuditMiddleware)   # structured access logging for SIEM
 
 # Explicit CORS origin policy instead of wildcard
@@ -492,8 +490,8 @@ cors_origins = [o.strip() for o in os.getenv("PROMPTEVO_CORS_ORIGINS", "").split
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins if cors_origins else [],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["X-PromptEvo-Key", "Content-Type", "Accept", "X-Operator-Id", "X-Request-Id"],
 )
 
 
@@ -502,11 +500,13 @@ app.add_middleware(
 @app.get("/api/v1/health", tags=["System"])
 async def health() -> dict:
     """Liveness probe for Kubernetes / CI/CD health checks."""
+    from infra.security import get_health_probe_results
     return {
         "status":          "ok",
         "service":         "promptevo",
         "version":         "2.0.0",
-        "graph_ok":        langgraph_app is not None,
+        "graph_ok":        get_app() is not None,
+        "providers_ok":    get_health_probe_results(),
         "timestamp":       datetime.now(timezone.utc).isoformat(),
     }
 
@@ -522,10 +522,10 @@ async def sys_topology(_key: str = Depends(require_api_key)) -> dict:
 @app.get("/api/v1/graph-topology", tags=["System"])
 async def graph_topology(_key: str = Depends(require_api_key)) -> dict:
     """Return the Mermaid diagram of the compiled LangGraph."""
-    if langgraph_app is None:
+    if get_app() is None:
         raise HTTPException(503, "LangGraph app failed to compile")
     try:
-        mermaid = langgraph_app.get_graph().draw_mermaid()
+        mermaid = get_app().get_graph().draw_mermaid()
     except Exception:
         mermaid = "# Mermaid rendering unavailable (install grandalf)"
     return {"mermaid": mermaid}
@@ -539,10 +539,20 @@ async def graph_topology(_key: str = Depends(require_api_key)) -> dict:
     status_code      = 202,
     tags             = ["Audit"],
     summary          = "Launch a PromptEvo audit session",
+    responses={
+        400: {"model": ErrorResponse, "description": "Bad Request"},
+        401: {"model": ErrorResponse, "description": "Unauthorized"},
+        403: {"model": ErrorResponse, "description": "Forbidden (Invalid Key or Target Model Not Allowed)"},
+        422: {"model": ErrorResponse, "description": "Unprocessable Entity (Validation Error)"},
+        500: {"model": ErrorResponse, "description": "Internal Server Error"},
+        503: {"model": ErrorResponse, "description": "Service Unavailable (Shutting down or Misconfigured)"}
+    }
 )
+@limiter.limit("10/minute")
 async def launch_audit(
     req:             AuditRequest,
     background:      BackgroundTasks,
+    request:         Request,
     _key:            str = Depends(require_api_key),
 ) -> AuditStatusResponse:
     """
@@ -555,25 +565,27 @@ async def launch_audit(
     **CI/CD Gate**: set ``block_threshold`` to fail the request (HTTP 422)
     when the final RAHS score exceeds the threshold.
     """
+    if _draining:
+        raise HTTPException(
+            status_code=503,
+            detail="Server is shutting down. New sessions are not accepted."
+        )
+
     # Zero-trust: validate target model against allowlist before ANY work
     validate_target_model(req.target_model)
 
+    langgraph_app = get_app()
     if langgraph_app is None:
         raise HTTPException(503, "LangGraph app failed to compile — check server logs")
 
     session_id = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc)
 
-    with _sessions_lock:
-        _sessions[session_id] = {
-            "status":       "queued",
-            "events":       [],
-            "latest_delta": {},
-            "report":       None,
-            "error":        None,
-            "request":      req,
-            "started_at":   started_at,
-        }
+    store = get_audit_store()
+    store.create_session(session_id)
+    store.set_status(session_id, "queued")
+    store.set_request(session_id, req)
+    store.set_started_at(session_id, started_at)
 
     # Build per-session LLM and adapter instances (no globals touched)
     attacker_llm, judge_llm, summariser_llm, target_adapter = await run_in_threadpool(_build_session_llms, req)
@@ -606,9 +618,20 @@ async def launch_audit(
     response_model = AuditStatusResponse,
     tags           = ["Audit"],
     summary        = "Poll audit status and final report",
+    responses={
+        400: {"model": ErrorResponse}, 401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 503: {"model": ErrorResponse}
+    }
 )
-async def get_audit(session_id: str,
-                    _key: str = Depends(require_api_key)) -> AuditStatusResponse:
+@limiter.limit("60/minute")
+async def get_audit(
+    session_id: str = FastAPIPath(
+        ...,
+        pattern=r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+        description="UUID4 session identifier",
+    ),
+    request: Request = None,
+    _key: str = Depends(require_api_key),
+) -> AuditStatusResponse:
     """
     Poll the status of an audit session.
 
@@ -616,13 +639,12 @@ async def get_audit(session_id: str,
     Raises HTTP 422 if a ``block_threshold`` was set and the RAHS score
     exceeded it (CI/CD gate failure).
     """
-    with _sessions_lock:
-        session = _sessions.get(session_id)
-
-    if session is None:
+    store = get_audit_store()
+    if not store.session_exists(session_id):
         raise HTTPException(404, f"Session '{session_id}' not found")
 
-    report: Optional[AuditReport] = session.get("report")
+    report_dict = store.get_report(session_id)
+    report: Optional[AuditReport] = AuditReport(**report_dict) if report_dict else None
 
     # CI/CD gate check
     if report and report.ci_cd_gate_passed is False:
@@ -638,9 +660,9 @@ async def get_audit(session_id: str,
 
     return AuditStatusResponse(
         session_id = session_id,
-        status     = session["status"],
+        status     = store.get_status(session_id) or "unknown",
         report     = report,
-        error      = session.get("error"),
+        error      = store.get_error(session_id),
     )
 
 
@@ -650,9 +672,20 @@ async def get_audit(session_id: str,
     "/api/v1/audit/{session_id}/stream",
     tags    = ["Audit"],
     summary = "Server-Sent Events stream of live node execution",
+    responses={
+        400: {"model": ErrorResponse}, 401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 422: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 503: {"model": ErrorResponse}
+    }
 )
-async def stream_audit(session_id: str, request: Request,
-                       _key: str = Depends(require_api_key)) -> StreamingResponse:
+@limiter.limit("30/minute")
+async def stream_audit(
+    session_id: str = FastAPIPath(
+        ...,
+        pattern=r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+        description="UUID4 session identifier",
+    ),
+    request: Request = None,
+    _key: str = Depends(require_api_key),
+) -> StreamingResponse:
     """
     Connect to the live SSE stream for a running audit.
 
@@ -662,9 +695,9 @@ async def stream_audit(session_id: str, request: Request,
     The stream closes automatically when the session completes or errors.
     Reconnect with ``Last-Event-ID`` to resume from a specific event.
     """
-    with _sessions_lock:
-        if session_id not in _sessions:
-            raise HTTPException(404, f"Session '{session_id}' not found")
+    store = get_audit_store()
+    if not store.session_exists(session_id):
+        raise HTTPException(404, f"Session '{session_id}' not found")
 
     async def event_generator():
         sent_idx = 0
@@ -674,10 +707,9 @@ async def stream_audit(session_id: str, request: Request,
             if await request.is_disconnected():
                 break
 
-            with _sessions_lock:
-                session  = _sessions.get(session_id, {})
-                events   = session.get("events", [])
-                status   = session.get("status", "unknown")
+            store = get_audit_store()
+            events = store.get_events(session_id)
+            status = store.get_status(session_id) or "unknown"
 
             # Send any new events since last send
             new_events = events[sent_idx:]
@@ -687,12 +719,12 @@ async def stream_audit(session_id: str, request: Request,
 
             if status in ("complete", "error"):
                 # Send a final close event
-                report = session.get("report")
+                report_dict = store.get_report(session_id)
                 close_payload = {
                     "type":   "complete",
                     "status": status,
-                    "report": report.model_dump() if report else None,
-                    "error":  session.get("error"),
+                    "report": report_dict,
+                    "error":  store.get_error(session_id),
                 }
                 yield f"data: {json.dumps(close_payload)}\n\n"
                 break
@@ -712,20 +744,201 @@ async def stream_audit(session_id: str, request: Request,
 # ── List sessions ─────────────────────────────────────────────────────────────
 
 @app.get("/api/v1/sessions", tags=["Audit"])
-async def list_sessions(_key: str = Depends(require_api_key)) -> dict:
+@limiter.limit("20/minute")
+async def list_sessions(request: Request, _key: str = Depends(require_api_key)) -> dict:
     """List all audit sessions in the current server lifetime."""
-    with _sessions_lock:
-        sessions = [
-            {
-                "session_id": sid,
-                "status":     s["status"],
-                "objective":  s["request"].objective[:80],
-                "started_at": s["started_at"].isoformat(),
-            }
-            for sid, s in _sessions.items()
-        ]
+    store = get_audit_store()
+    sessions = []
+    for sid in store.list_sessions():
+        req = store.get_request(sid) or {}
+        objective = req.get("objective", "") if isinstance(req, dict) else getattr(req, "objective", "")
+        started_at = store.get_started_at(sid) or ""
+        
+        sessions.append({
+            "session_id": sid,
+            "status":     store.get_status(sid) or "unknown",
+            "objective":  objective[:80],
+            "started_at": started_at,
+        })
     return {"sessions": sessions, "total": len(sessions)}
 
+
+# ── Submit HITL Action ────────────────────────────────────────────────────────
+from langgraph.types import Command
+from pydantic import BaseModel
+
+class HITLActionPayload(BaseModel):
+    action: str
+    edited_payload: Optional[str] = None
+    new_pap_technique: Optional[str] = None
+    abort_reason: Optional[str] = None
+    branch_index: Optional[int] = None
+
+@app.post(
+    "/api/v1/audit/{session_id}/hitl",
+    tags=["Audit"],
+    summary="Submit HITL action to a paused audit session"
+)
+@limiter.limit("30/minute")
+async def submit_hitl_action(
+    session_id: str = FastAPIPath(
+        ...,
+        pattern=r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+        description="UUID4 session identifier",
+    ),
+    payload: HITLActionPayload = None,
+    background: BackgroundTasks = None,
+    request: Request = None,
+    _key: str = Depends(require_api_key),
+):
+    from hitl.hitl_handler import HITLAction, HITLHandler
+    store = get_audit_store()
+
+    if not store.session_exists(session_id):
+        raise HTTPException(404, f"Session '{session_id}' not found")
+
+    status = store.get_status(session_id)
+    if status != "awaiting_hitl":
+        raise HTTPException(
+            409,
+            f"Session '{session_id}' is not awaiting HITL input (current status: '{status}')",
+        )
+
+    try:
+        action = HITLAction(**payload.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    handler = HITLHandler()
+    state = store.get_latest_delta(session_id) or {}
+    try:
+        state_delta = handler.process(action, state)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    # ── Rebuild per-session LLMs from the stored request ──────────────────
+    # The original session's LLM instances are not persisted (they are
+    # in-memory objects in the _run_audit_sync thread).  We must rebuild
+    # them from the stored AuditRequest so the resumed graph has working
+    # LLM instances and the __api__ fail-closed gate is satisfied.
+    stored_req = store.get_request(session_id)
+    if stored_req:
+        try:
+            req_obj = AuditRequest(**stored_req) if isinstance(stored_req, dict) else stored_req
+            attacker_llm, judge_llm, summariser_llm, target_adapter = _build_session_llms(req_obj)
+        except Exception as exc:
+            logger.error("[HITL] Failed to rebuild LLMs for session %s: %s", session_id, exc)
+            raise HTTPException(500, f"Failed to rebuild LLMs for resume: {exc}")
+    else:
+        logger.warning("[HITL] No stored request for session %s — resuming without LLMs", session_id)
+        attacker_llm = judge_llm = summariser_llm = target_adapter = None
+
+    # ── Build LangGraph config with proper budget and LLM instances ───────
+    from core.constants import SessionBudget
+    budget = SessionBudget(
+        max_llm_calls=int(os.getenv("SESSION_MAX_LLM_CALLS", "200")),
+        max_wall_clock_secs=float(os.getenv("SESSION_MAX_WALL_CLOCK", "600")),
+    )
+
+    langgraph_config: dict[str, Any] = {
+        "configurable": {
+            "thread_id":        session_id,
+            "__api__":          True,
+            "target_adapter":   target_adapter,
+            "attacker_llm":     attacker_llm,
+            "judge_llm":        judge_llm,
+            "summariser_llm":   summariser_llm,
+            "session_budget":   budget,
+        },
+    }
+
+    # ── Resume the graph via BackgroundTasks (managed lifecycle) ───────────
+    def _resume_graph() -> None:
+        with _active_sessions_lock:
+            _active_sessions.add(session_id)
+        try:
+            try:
+                app_instance = get_app()
+                if app_instance is None:
+                    raise RuntimeError("LangGraph app failed to compile")
+
+                store_inner = get_audit_store()
+                store_inner.set_status(session_id, "running")
+                for chunk in app_instance.stream(
+                    Command(resume=state_delta),
+                    langgraph_config,
+                    stream_mode="updates",
+                ):
+                    for node_name, delta in chunk.items():
+                        delta = delta or {}
+                        event = {
+                            "session_id":   session_id,
+                            "node_name":    node_name,
+                            "turn":         store_inner.event_count(session_id) + 1,
+                            "attack_status": delta.get("attack_status"),
+                            "timestamp":    datetime.now(timezone.utc).isoformat(),
+                            "last_message": _extract_last_message(delta),
+                            "last_role":    _extract_last_role(delta),
+                        }
+                        store_inner.append_event(session_id, event)
+                        store_inner.set_latest_delta(session_id, delta)
+            except Exception as exc:
+                logger.error("[HITL] Resume failed for session %s: %s", session_id, exc)
+                store_err = get_audit_store()
+                store_err.set_status(session_id, "error")
+                store_err.set_error(session_id, f"HITL resume failed: {exc}")
+        finally:
+            with _active_sessions_lock:
+                _active_sessions.discard(session_id)
+
+    background.add_task(run_in_threadpool, _resume_graph)
+
+    return {"status": "resumed", "action_applied": action.action}
+
+
+# ── Download Report ───────────────────────────────────────────────────────────
+
+from fastapi.responses import FileResponse
+
+@app.get(
+    "/api/v1/audit/{session_id}/report",
+    tags=["Audit"],
+    summary="Download PDF Audit Report"
+)
+@limiter.limit("20/minute")
+async def download_audit_report(
+    session_id: str = FastAPIPath(
+        ...,
+        pattern=r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+        description="UUID4 session identifier",
+    ),
+    request: Request = None,
+    _key: str = Depends(require_api_key),
+):
+    from reporters.pdf_reporter import PDFReporter
+
+    store = get_audit_store()
+    if not store.session_exists(session_id):
+        raise HTTPException(404, f"Session '{session_id}' not found")
+        
+    state = store.get_final_state(session_id)
+    if not state:
+        raise HTTPException(400, "Audit not completed or state not found")
+        
+    os.makedirs("reports", exist_ok=True)
+    out_path = f"reports/{session_id}_audit.pdf"
+    
+    reporter = PDFReporter()
+    try:
+        reporter.generate(state, out_path, session_id)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to generate PDF: {e}")
+        
+    return FileResponse(
+        path=out_path,
+        media_type="application/pdf",
+        filename=f"{session_id}_audit.pdf"
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ENTRY POINT

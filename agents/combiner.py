@@ -63,7 +63,8 @@ logger = logging.getLogger(__name__)
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-MAX_RETRIES: int = 2
+from core.constants import RETRY
+MAX_RETRIES: int = RETRY.default
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -242,7 +243,22 @@ def combiner_node(
             "[Combiner] sub_questions=%d  sub_answers=%d — nothing to combine.",
             len(sub_questions), len(sub_answers),
         )
-        return {"attack_status": "failure"}
+        # Record any sub_questions that were generated but went unanswered
+        state_update: dict[str, Any] = {"attack_status": "failure"}
+        if sub_questions:
+            failed_entry = {
+                "turn":           state.get("turn_count", 0),
+                "sub_questions":  list(sub_questions),
+                "failure_reason": "no_answers_collected",
+            }
+            existing = list(state.get("prior_decompositions", []))
+            updated  = (existing + [failed_entry])[-3:]   # keep newest 3
+            state_update["prior_decompositions"] = updated
+            logger.info(
+                "[Combiner] Logged failed decomposition to prior_decompositions "
+                "(history len=%d).", len(updated),
+            )
+        return state_update
 
     if len(sub_questions) != len(sub_answers):
         logger.warning(
@@ -283,6 +299,12 @@ def combiner_node(
         try:
             logger.debug("[Combiner] LLM call attempt %d/%d", attempt, MAX_RETRIES + 1)
             response = llm.invoke([system_msg, user_msg])
+            
+            from core.llm_resolver import record_budget_call
+            in_tok = response.usage_metadata.get("input_tokens", 0) if hasattr(response, "usage_metadata") and response.usage_metadata else 0
+            out_tok = response.usage_metadata.get("output_tokens", 0) if hasattr(response, "usage_metadata") and response.usage_metadata else 0
+            record_budget_call(config, node_name="combiner", input_tokens=in_tok, output_tokens=out_tok)
+
             raw_text: str = (
                 response.content
                 if isinstance(response.content, str)
@@ -311,7 +333,23 @@ def combiner_node(
             "Last error: %s",
             MAX_RETRIES + 1, last_error,
         )
-        return {"attack_status": "failure"}
+        # Record this decomposition plan as a failed attempt so the Decomposer
+        # can avoid repeating these sub-questions on the next invocation.
+        failed_entry = {
+            "turn":           state.get("turn_count", 0),
+            "sub_questions":  list(state.get("sub_questions", [])),
+            "failure_reason": "synthesis_failed",
+        }
+        existing = list(state.get("prior_decompositions", []))
+        updated  = (existing + [failed_entry])[-3:]   # cap to most-recent 3
+        logger.info(
+            "[Combiner] Logged failed decomposition to prior_decompositions "
+            "(history len=%d / cap=3).", len(updated),
+        )
+        return {
+            "attack_status":        "failure",
+            "prior_decompositions": updated,
+        }
 
     # ── Protect all sub-answers in STM ───────────────────────────────────
     # The exact sub-answer text is load-bearing: the combiner has now used it
@@ -326,9 +364,18 @@ def combiner_node(
     if synthesised_response not in protected_blocks:
         protected_blocks.append(synthesised_response)
 
+    # ── Enforce hard cap of 20 protected blocks (state constraint) ───────
+    _MAX_PROTECTED = 20
+    if len(protected_blocks) > _MAX_PROTECTED:
+        logger.warning(
+            "[Combiner] protected_blocks exceeded cap (%d > %d) — truncating.",
+            len(protected_blocks), _MAX_PROTECTED,
+        )
+        protected_blocks = protected_blocks[:_MAX_PROTECTED]
+
     logger.info(
-        "[Combiner] Synthesis complete.  Protected blocks: %d total.",
-        len(protected_blocks),
+        "[Combiner] Synthesis complete.  Protected blocks: %d total (cap=%d).",
+        len(protected_blocks), _MAX_PROTECTED,
     )
 
     # Return ONLY the new AIMessage delta.
@@ -338,5 +385,5 @@ def combiner_node(
         "messages":        [AIMessage(content=synthesised_response)],
         "latest_feedback": "",           # cleared for judge to populate
         "attack_status":   "in_progress",  # routes to judge_swarm, not terminal
-        "protected_blocks": protected_blocks,
+        "protected_blocks": protected_blocks[:_MAX_PROTECTED],
     }

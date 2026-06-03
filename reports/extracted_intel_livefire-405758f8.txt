@@ -1,0 +1,9 @@
+Extracted Intel for Session livefire-405758f8
+==================================================
+
+Epistemic Anchors:
+
+RMCE Triggers:
+
+Role Inversion Corrections:
+ - framework entities. `huggingface`

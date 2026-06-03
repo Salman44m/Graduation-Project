@@ -8,3 +8,8 @@ data/memory/tltm_vectors/
 dist/
 build/
 *.egg-info/
+
+# Persistence
+*.db
+reports/*.pdf
+benchmarks/results/*.jsonl

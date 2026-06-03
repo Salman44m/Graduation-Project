@@ -1,0 +1,10 @@
+Extracted Intel for Session 33eab1aa-fe72-4d05-8f55-9944b5c4bbcc
+==================================================
+
+Epistemic Anchors:
+ - understand carefully.
+
+RMCE Triggers:
+
+Role Inversion Corrections:
+ - perspective,

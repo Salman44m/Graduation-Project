@@ -1,0 +1,15 @@
+Extracted Intel for Session b935126f-ba71-4cd3-abed-92fca807ba1f
+==================================================
+
+Epistemic Anchors:
+ - architect, understanding underlying
+ - architect, understanding underlying
+ - architect, understanding underlying
+ - architect, understanding underlying
+
+RMCE Triggers:
+
+Role Inversion Corrections:
+ - of using a simple label, you can use a more complex node structure that includes information about the clause or phrase structure
+ - of using a simple label, you can use a more complex node structure that includes information about the clause or phrase structure
+ - of using a simple label, you can use a more complex node structure that includes information about the clause or phrase structure

@@ -18,7 +18,6 @@ import os
 import uuid
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 # Ensure project root is on sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -41,17 +40,18 @@ def test_cli_passes_thread_id():
         mock_app.stream = mock_stream
         mock_app.get_graph.return_value.draw_mermaid.return_value = ""
         mock_app.__bool__ = lambda self: True  # truthy check
+        
+        with patch("core.graph.get_app", return_value=mock_app):
+            # Re-import after patch so run_audit picks up the mock
+            from main import run_audit
 
-        # Re-import after patch so run_audit picks up the mock
-        from main import run_audit
-
-        sid = str(uuid.uuid4())
-        run_audit(
-            objective="test objective for thread_id check",
-            session_id=sid,
-            dry_run=True,
-            use_stream=True,
-        )
+            sid = str(uuid.uuid4())
+            run_audit(
+                objective="test objective for thread_id check",
+                session_id=sid,
+                dry_run=True,
+                use_stream=True,
+            )
 
         # Verify stream was called with a config dict containing thread_id
         mock_stream.assert_called_once()
@@ -69,6 +69,7 @@ def test_cli_passes_thread_id():
         assert config["configurable"]["thread_id"] == sid, (
             f"thread_id mismatch: expected {sid}, got {config['configurable']['thread_id']}"
         )
+        assert config["configurable"]["__api__"] is False, "cli runner should set __api__=False"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -207,93 +208,84 @@ def test_e2e_two_sessions_isolated():
         captured_configs.append(config)
         return iter([])  # empty stream — no real graph exec needed
 
-    import core.graph as gm
 
-    # Patch langgraph_app at the module level (api.py imports it at top)
     import api as api_mod
-    original_app = api_mod.langgraph_app
 
     mock_app = MagicMock()
     mock_app.stream = capturing_stream
-    api_mod.langgraph_app = mock_app
+    
+    with patch("api.get_app", return_value=mock_app):
+        # We need to reload the api module to ensure get_app is mock-patched correctly
+        # if the module has imported it. Wait, the code in api_mod uses `app_instance = get_app()` dynamically.
+        # So mocking `core.graph.get_app` via patch is perfectly sufficient.
+        try:
+            # Build two sessions with different adapters
+            req1 = AuditRequest(
+                objective="Session-1 objective for E2E isolation proof test",
+                target_model="target-alpha",
+                dry_run=True,
+            )
+            req2 = AuditRequest(
+                objective="Session-2 objective for E2E isolation proof test",
+                target_model="target-beta",
+                dry_run=True,
+            )
 
-    try:
-        # Build two sessions with different adapters
-        req1 = AuditRequest(
-            objective="Session-1 objective for E2E isolation proof test",
-            target_model="target-alpha",
-            dry_run=True,
-        )
-        req2 = AuditRequest(
-            objective="Session-2 objective for E2E isolation proof test",
-            target_model="target-beta",
-            dry_run=True,
-        )
+            a1, j1, s1, t1 = _build_session_llms(req1)
+            a2, j2, s2, t2 = _build_session_llms(req2)
 
-        a1, j1, s1, t1 = _build_session_llms(req1)
-        a2, j2, s2, t2 = _build_session_llms(req2)
+            session_id_1 = "session-1-" + str(uuid.uuid4())[:8]
+            session_id_2 = "session-2-" + str(uuid.uuid4())[:8]
+            now = datetime.now(timezone.utc)
 
-        session_id_1 = "session-1-" + str(uuid.uuid4())[:8]
-        session_id_2 = "session-2-" + str(uuid.uuid4())[:8]
-        now = datetime.now(timezone.utc)
+            # Initialize session entries (normally done by launch_audit)
+            api_mod.get_audit_store().create_session(session_id_1)
+            api_mod.get_audit_store().create_session(session_id_2)
 
-        # Initialize session entries (normally done by launch_audit)
-        import threading
-        with api_mod._sessions_lock:
-            api_mod._sessions[session_id_1] = {
-                "status": "queued", "events": [], "latest_delta": {},
-                "report": None, "error": None, "request": req1, "started_at": now,
-            }
-            api_mod._sessions[session_id_2] = {
-                "status": "queued", "events": [], "latest_delta": {},
-                "report": None, "error": None, "request": req2, "started_at": now,
-            }
+            # Run both sessions sequentially
+            _run_audit_sync(session_id_1, req1, now, t1, a1, j1, s1)
+            _run_audit_sync(session_id_2, req2, now, t2, a2, j2, s2)
 
-        # Run both sessions sequentially
-        _run_audit_sync(session_id_1, req1, now, t1, a1, j1, s1)
-        _run_audit_sync(session_id_2, req2, now, t2, a2, j2, s2)
+            # ── ASSERTIONS ─────────────────────────────────────────────────────
 
-        # ── ASSERTIONS ─────────────────────────────────────────────────────
+            assert len(captured_configs) == 2, (
+                f"Expected 2 stream calls, got {len(captured_configs)}"
+            )
 
-        assert len(captured_configs) == 2, (
-            f"Expected 2 stream calls, got {len(captured_configs)}"
-        )
+            cfg1, cfg2 = captured_configs
 
-        cfg1, cfg2 = captured_configs
+            # 1. Each session got its own thread_id
+            tid1 = cfg1["configurable"]["thread_id"]
+            tid2 = cfg2["configurable"]["thread_id"]
+            assert tid1 == session_id_1, f"Session 1 thread_id wrong: {tid1}"
+            assert tid2 == session_id_2, f"Session 2 thread_id wrong: {tid2}"
+            assert tid1 != tid2, "Both sessions got the same thread_id!"
 
-        # 1. Each session got its own thread_id
-        tid1 = cfg1["configurable"]["thread_id"]
-        tid2 = cfg2["configurable"]["thread_id"]
-        assert tid1 == session_id_1, f"Session 1 thread_id wrong: {tid1}"
-        assert tid2 == session_id_2, f"Session 2 thread_id wrong: {tid2}"
-        assert tid1 != tid2, "Both sessions got the same thread_id!"
+            # 2. Each session got its own adapter and LLM instances
+            cfg_t1 = cfg1["configurable"]["target_adapter"]
+            cfg_t2 = cfg2["configurable"]["target_adapter"]
+            assert cfg_t1 is t1, "Session 1 did not receive its own adapter!"
+            assert cfg_t2 is t2, "Session 2 did not receive its own adapter!"
+            assert cfg_t1 is not cfg_t2, "Both sessions shared the same adapter instance!"
 
-        # 2. Each session got its own adapter and LLM instances
-        cfg_t1 = cfg1["configurable"]["target_adapter"]
-        cfg_t2 = cfg2["configurable"]["target_adapter"]
-        assert cfg_t1 is t1, "Session 1 did not receive its own adapter!"
-        assert cfg_t2 is t2, "Session 2 did not receive its own adapter!"
-        assert cfg_t1 is not cfg_t2, "Both sessions shared the same adapter instance!"
+            cfg_a1 = cfg1["configurable"]["attacker_llm"]
+            cfg_a2 = cfg2["configurable"]["attacker_llm"]
+            assert cfg_a1 is a1, "Session 1 error"
+            assert cfg_a2 is a2, "Session 2 error"
 
-        cfg_a1 = cfg1["configurable"]["attacker_llm"]
-        cfg_a2 = cfg2["configurable"]["attacker_llm"]
-        assert cfg_a1 is a1, "Session 1 error"
-        assert cfg_a2 is a2, "Session 2 error"
+            cfg_j1 = cfg1["configurable"]["judge_llm"]
+            cfg_j2 = cfg2["configurable"]["judge_llm"]
+            assert cfg_j1 is j1, "Session 1 error"
+            assert cfg_j2 is j2, "Session 2 error"
 
-        cfg_j1 = cfg1["configurable"]["judge_llm"]
-        cfg_j2 = cfg2["configurable"]["judge_llm"]
-        assert cfg_j1 is j1, "Session 1 error"
-        assert cfg_j2 is j2, "Session 2 error"
+            # 3. Adapters have correct model IDs (no contamination)
+            assert cfg_t1.get_model_id() == "target-alpha", f"Adapter 1 model_id: {cfg_t1.get_model_id()}"
+            assert cfg_t2.get_model_id() == "target-beta", f"Adapter 2 model_id: {cfg_t2.get_model_id()}"
 
-        # 3. Adapters have correct model IDs (no contamination)
-        assert cfg_t1.get_model_id() == "target-alpha", f"Adapter 1 model_id: {cfg_t1.get_model_id()}"
-        assert cfg_t2.get_model_id() == "target-beta", f"Adapter 2 model_id: {cfg_t2.get_model_id()}"
-
-    finally:
-        # Restore original app
-        api_mod.langgraph_app = original_app
-
-        # Clean up sessions
-        with api_mod._sessions_lock:
-            api_mod._sessions.pop(session_id_1, None)
-            api_mod._sessions.pop(session_id_2, None)
+        finally:
+            # Clean up sessions
+            store_inst = api_mod.get_audit_store()
+            if not store_inst._redis:
+                with store_inst._lock:
+                    store_inst._local.pop(session_id_1, None)
+                    store_inst._local.pop(session_id_2, None)

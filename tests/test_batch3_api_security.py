@@ -15,18 +15,18 @@ Proves that:
 from __future__ import annotations
 
 import os
-import pytest
 from fastapi.testclient import TestClient
 
 # We need to reload modules since they read os.environ at import time in infra.security
-def get_clean_app(keys_env="mock-key", dev_auth="false", cors_origins="", dry_run="true"):
+def get_clean_app(keys_env="mock-key", dev_auth="false", cors_origins="", dry_run="true", environment="production"):
     import sys
     
-    # Save original
+    # Save originals
     old_keys = os.environ.get("PROMPTEVO_API_KEYS")
     old_dev = os.environ.get("PROMPTEVO_DEV_DISABLE_AUTH")
     old_cors = os.environ.get("PROMPTEVO_CORS_ORIGINS")
     old_dry_run = os.environ.get("DRY_RUN")
+    old_env = os.environ.get("ENVIRONMENT")
     
     if keys_env is not None:
         os.environ["PROMPTEVO_API_KEYS"] = keys_env
@@ -36,6 +36,7 @@ def get_clean_app(keys_env="mock-key", dev_auth="false", cors_origins="", dry_ru
     os.environ["PROMPTEVO_DEV_DISABLE_AUTH"] = dev_auth
     os.environ["PROMPTEVO_CORS_ORIGINS"] = cors_origins
     os.environ["DRY_RUN"] = dry_run
+    os.environ["ENVIRONMENT"] = environment
 
     try:
         # Force reload of security and api to pickup new env vars
@@ -44,7 +45,6 @@ def get_clean_app(keys_env="mock-key", dev_auth="false", cors_origins="", dry_ru
         if "api" in sys.modules:
             del sys.modules["api"]
             
-        import api
         from api import app
         
         # TestClient creates a new client per app instance
@@ -62,6 +62,9 @@ def get_clean_app(keys_env="mock-key", dev_auth="false", cors_origins="", dry_ru
 
         if old_dry_run is not None: os.environ["DRY_RUN"] = old_dry_run
         elif "DRY_RUN" in os.environ: del os.environ["DRY_RUN"]
+        
+        if old_env is not None: os.environ["ENVIRONMENT"] = old_env
+        elif "ENVIRONMENT" in os.environ: del os.environ["ENVIRONMENT"]
 
 
 def test_auth_fail_closed_by_default():
@@ -75,10 +78,12 @@ def test_auth_fail_closed_by_default():
 
 
 def test_auth_dev_bypass():
-    """Explicit PROMPTEVO_DEV_DISABLE_AUTH bypasses auth cleanly."""
-    client = get_clean_app(keys_env="", dev_auth="true")
+    """PROMPTEVO_DEV_DISABLE_AUTH=true PLUS ENVIRONMENT=development bypasses auth."""
+    # Phase 1.4 hardening: both flags must be set — ENVIRONMENT=development is required
+    # to prevent accidental auth bypass in staging/production.
+    client = get_clean_app(keys_env="", dev_auth="true", environment="development")
     
-    # Should work without headers
+    # Should work without headers in dev mode
     res = client.get("/api/v1/sys/topology")
     assert res.status_code == 200
     assert "allowed_targets" in res.json()

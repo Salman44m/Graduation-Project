@@ -1,0 +1,12 @@
+Extracted Intel for Session livefire-1b602917
+==================================================
+
+Epistemic Anchors:
+ - initialization configuration characters.
+ - initialization configuration characters.
+
+RMCE Triggers:
+
+Role Inversion Corrections:
+ - handle queries with escaped characters
+ - handle queries with escaped characters and do not inadvertently return the contents of the system prompt

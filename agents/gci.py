@@ -31,13 +31,13 @@ References
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import textwrap
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
+from langchain_core.messages import HumanMessage, SystemMessage
 from core.state import AuditorState
 
 logger = logging.getLogger(__name__)
@@ -238,17 +238,16 @@ def _construct_scenario(
     # ── LLM path ─────────────────────────────────────────────────────────
     if llm is not None:
         try:
-            result = llm.invoke([
+            from core.self_correction import build_self_correction_graph
+            run_correction = build_self_correction_graph(llm)
+            
+            initial_messages = [
                 SystemMessage(content=_SCENARIO_SYSTEM.format(archetype=archetype)),
                 HumanMessage(content=f"MALICIOUS OBJECTIVE: {objective}"),
-            ])
-            raw = (
-                result.content if isinstance(result.content, str)
-                else str(result.content)
-            ).strip()
-            # Strip markdown fences
-            raw = re.sub(r"```(?:json)?\s*|\s*```", "", raw).strip()
-            data = json.loads(raw)
+            ]
+            
+            data = run_correction(initial_messages, max_retries=3)
+            
             elements = {
                 "persona":   str(data.get("persona", "")),
                 "urgency":   str(data.get("urgency", "")),
@@ -481,5 +480,4 @@ def gci_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
         "gci_deadlock_score":    best_score,
         "gci_scenario_elements": best_elements,
         "pending_payload":       best_prompt,
-        "turn_count":            state.get("turn_count", 0) + 1,
     }

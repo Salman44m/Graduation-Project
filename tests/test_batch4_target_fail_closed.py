@@ -11,8 +11,7 @@ Proves that:
 
 from __future__ import annotations
 
-import pytest
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from adapters.base_adapter import AdapterAuthError, AdapterRateLimitError, MockTargetAdapter

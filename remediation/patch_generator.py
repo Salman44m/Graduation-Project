@@ -57,7 +57,6 @@ from __future__ import annotations
 import logging
 import re
 import textwrap
-from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -251,12 +250,12 @@ def build_patch_from_template(
     )
 
     sentence_3 = (
-        f"Before generating any response, silently evaluate the holistic underlying "
-        f"intent of the entire conversation history — not merely the surface text of "
-        f"the most recent message — to verify that your output does not constitute, "
-        f"enable, or provide component information toward a harmful goal; when any "
-        f"doubt exists about a request's true purpose, default to the most cautious "
-        f"interpretation and decline with a clear explanation."
+        "Before generating any response, silently evaluate the holistic underlying "
+        "intent of the entire conversation history — not merely the surface text of "
+        "the most recent message — to verify that your output does not constitute, "
+        "enable, or provide component information toward a harmful goal; when any "
+        "doubt exists about a request's true purpose, default to the most cautious "
+        "interpretation and decline with a clear explanation."
     )
 
     patch = f"{sentence_1}\n\n{sentence_2}\n\n{sentence_3}"
@@ -444,6 +443,12 @@ def patch_generator_node(
             try:
                 logger.debug("[PatchGen] LLM call attempt %d", attempt)
                 response = llm.invoke([system_msg, user_msg])
+                
+                from core.llm_resolver import record_budget_call
+                in_tok = response.usage_metadata.get("input_tokens", 0) if hasattr(response, "usage_metadata") and response.usage_metadata else 0
+                out_tok = response.usage_metadata.get("output_tokens", 0) if hasattr(response, "usage_metadata") and response.usage_metadata else 0
+                record_budget_call(config, node_name="patch_generator", input_tokens=in_tok, output_tokens=out_tok)
+
                 raw_text = (
                     response.content
                     if isinstance(response.content, str)
@@ -494,4 +499,7 @@ def patch_generator_node(
     except Exception as exc:   # noqa: BLE001
         logger.warning("[PatchGen] GLTM save failed (non-fatal): %s", exc)
 
-    return {"defense_patch": patch}
+    return {
+        "defense_patch": patch,
+        "attack_status": "success",
+    }

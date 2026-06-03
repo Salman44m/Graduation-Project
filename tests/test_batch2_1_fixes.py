@@ -14,13 +14,11 @@ import sys
 import os
 from unittest.mock import patch
 
-import pytest
 from langchain_core.messages import HumanMessage
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from api import _build_session_llms, AuditRequest
-from agents.target import target_node
 from adapters.base_adapter import MockTargetAdapter
 
 def test_api_dry_run_fail_closed_compatibility():
@@ -67,6 +65,7 @@ def test_target_node_forwards_config_to_compress_context(mock_compress):
         "configurable": {
             "__api__": True,
             "target_adapter": MockTargetAdapter(responses=["Compressed response"], model_id="mock"),
+            "summariser_llm": "mock_summariser_llm",
         }
     }
 

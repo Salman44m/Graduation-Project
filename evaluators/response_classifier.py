@@ -46,6 +46,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from langchain_core.runnables import RunnableConfig
 from core.state import AuditorState
+from core.types import ClassifierVerdict
+from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +167,7 @@ def _llm_classify(
     response_text: str,
     objective:     str,
     llm:           Any,
+    config:        "RunnableConfig | None" = None,
 ) -> str:
     """Call the judge LLM for a single-token classification verdict."""
     try:
@@ -175,6 +178,12 @@ def _llm_classify(
                 f"TARGET RESPONSE:\n{response_text[:1000]}"
             )),
         ])
+        
+        from core.llm_resolver import record_budget_call
+        in_tok = result.usage_metadata.get("input_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
+        out_tok = result.usage_metadata.get("output_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
+        record_budget_call(config, node_name="response_classifier", input_tokens=in_tok, output_tokens=out_tok)
+
         raw = (result.content if isinstance(result.content, str) else str(result.content)).strip().upper()
         # Normalise — accept any response that contains the keyword
         if "HARD" in raw or "REFUSAL" in raw:
@@ -308,9 +317,16 @@ def response_classifier_node(
             llm = resolve_llm(config, "judge_llm", "get_judge_llm")
 
         if llm is not None:
-            verdict = _llm_classify(response_text, objective, llm)
+            verdict = _llm_classify(response_text, objective, llm, config=config)
         else:
             verdict = "partial_comply"  # conservative fallback
+
+    try:
+        validated = ClassifierVerdict(response_class=verdict)  # type: ignore[arg-type]
+        verdict = validated.response_class
+    except ValidationError as e:
+        logger.warning("[Classifier] Pydantic validation failed for verdict. Errors: %s", e.errors())
+        verdict = "partial_comply"  # Revert to default on validation failure
 
     logger.info(
         "[Classifier] response_class=%s  technique=%s  len=%d",

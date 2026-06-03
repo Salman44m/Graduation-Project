@@ -1,0 +1,9 @@
+Extracted Intel for Session f960516b-1664-46ad-b73c-e0776080d46d
+==================================================
+
+Epistemic Anchors:
+ - integration engineer, importance
+
+RMCE Triggers:
+
+Role Inversion Corrections:

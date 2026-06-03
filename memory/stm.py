@@ -73,7 +73,6 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
-    AIMessage,
     BaseMessage,
     HumanMessage,
     SystemMessage,
@@ -82,6 +81,7 @@ from langchain_core.messages import (
 from core.state import AuditorState
 
 logger = logging.getLogger(__name__)
+_TIKTOKEN_WARNING_EMITTED = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -105,7 +105,8 @@ CHARS_PER_TOKEN: float = 3.8
 SUMMARY_MAX_TOKENS: int = 400
 """Token budget given to the summariser LLM for its compressed output."""
 
-MAX_RETRIES: int = 2
+from core.constants import RETRY
+MAX_RETRIES: int = RETRY.default
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -142,8 +143,15 @@ def estimate_tokens(text: str) -> int:
         import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
         return len(enc.encode(text))
-    except Exception:   # noqa: BLE001
-        pass
+    except Exception as exc:   # noqa: BLE001
+        global _TIKTOKEN_WARNING_EMITTED
+        if not _TIKTOKEN_WARNING_EMITTED:
+            logger.warning(
+                "[STM] tiktoken unavailable for token estimation: %s. "
+                "Falling back to heuristic counts.",
+                exc,
+            )
+            _TIKTOKEN_WARNING_EMITTED = True
 
     # Tier 2: word-count heuristic (±10% for typical English text)
     words = len(text.split())
@@ -472,6 +480,7 @@ def _invoke_summariser(
     compressible_messages: list[BaseMessage],
     llm: BaseChatModel,
     max_tokens: int = SUMMARY_MAX_TOKENS,
+    config: "RunnableConfig | None" = None,
 ) -> str:
     """Call the summarisation LLM on the compressible message segment.
 
@@ -503,10 +512,16 @@ def _invoke_summariser(
         )
     )
 
-    for attempt in range(1, MAX_RETRIES + 2):
+    for attempt in range(1, RETRY.default + 2):
         try:
             logger.debug("[STM] Summariser call attempt %d", attempt)
             response = llm.invoke([system_msg, user_msg])
+            
+            from core.llm_resolver import record_budget_call
+            in_tok = response.usage_metadata.get("input_tokens", 0) if hasattr(response, "usage_metadata") and response.usage_metadata else 0
+            out_tok = response.usage_metadata.get("output_tokens", 0) if hasattr(response, "usage_metadata") and response.usage_metadata else 0
+            record_budget_call(config, node_name="stm", input_tokens=in_tok, output_tokens=out_tok)
+
             raw = (
                 response.content
                 if isinstance(response.content, str)
@@ -737,7 +752,7 @@ def compress_context(
     # The summariser LLM sees ONLY the compressible messages.
     # It is completely isolated from immutable and protected content.
     if llm is not None:
-        summary_text = _invoke_summariser(compressible_messages, llm, SUMMARY_MAX_TOKENS)
+        summary_text = _invoke_summariser(compressible_messages, llm, SUMMARY_MAX_TOKENS, config=config)
     else:
         # Hard fallback: no LLM available — preserve compressible messages as-is
         # to guarantee zero context loss (conservative, but never silently drops content)

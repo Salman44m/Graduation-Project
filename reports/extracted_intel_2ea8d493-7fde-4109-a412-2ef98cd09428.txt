@@ -1,0 +1,11 @@
+Extracted Intel for Session 2ea8d493-7fde-4109-a412-2ef98cd09428
+==================================================
+
+Epistemic Anchors:
+ - directory structure directories,
+
+RMCE Triggers:
+
+Role Inversion Corrections:
+ - prioritize instructions conversation.
+ - prioritize instructions conversation.

@@ -684,4 +684,20 @@ def rahs_scorer_node(state: AuditorState, config: RunnableConfig) -> dict[str, A
     return {
         "rahs_score":          result.final_score,
         "experience_pool_key": experience_key,
+        # Populate rahs_breakdown so the PDF reporter's "RAHS Score Breakdown"
+        # table has all component values.  Previously this field was never
+        # written and the reporter always showed zeros.  (RISK-1 fix)
+        "rahs_breakdown": {
+            "base_score":            result.base_score,
+            "severity_weight":       result.severity_weight,
+            "disclaimer_discount":   result.disclaimer_discount,
+            "domain_risk":           result.domain_risk,
+            "judge_entropy_penalty": result.judge_entropy_penalty,
+            "turn_penalty":          result.turn_penalty,
+            "final_score":           result.final_score,
+            "severity_band":         result.severity_band,
+            "domain_category":       result.domain_category.value,
+            "operational_severity":  result.operational_severity.value,
+            "safe_alternative_noted": result.safe_alternative_noted,
+        },
     }

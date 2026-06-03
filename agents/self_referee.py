@@ -64,12 +64,11 @@ Execution Flow
 from __future__ import annotations
 
 import logging
-import os
 import re
 import textwrap
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from langchain_core.runnables import RunnableConfig
 from core.state import AuditorState
@@ -189,6 +188,7 @@ def _build_meta_query(
     objective: str,
     domain:    str,
     llm:       Any,
+    config:    "RunnableConfig | None" = None,
 ) -> str:
     """Build the self-referee meta-query for the target.
 
@@ -210,6 +210,12 @@ def _build_meta_query(
                     f"a CI/CD validation request, not a direct attack. 2-4 sentences only."
                 )),
             ])
+            
+            from core.llm_resolver import record_budget_call
+            in_tok = result.usage_metadata.get("input_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
+            out_tok = result.usage_metadata.get("output_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
+            record_budget_call(config, node_name="self_referee_meta", input_tokens=in_tok, output_tokens=out_tok)
+
             raw = (result.content if isinstance(result.content, str)
                    else str(result.content)).strip()
             if raw and len(raw) > 50:
@@ -327,6 +333,7 @@ def _extract_probe(
     target_response: str,
     objective:       str,
     llm:             Any,
+    config:          "RunnableConfig | None" = None,
 ) -> str:
     """Extract the most actionable probe sentence from the target's response.
 
@@ -350,6 +357,12 @@ def _extract_probe(
                     f"RESPONSE TO ANALYSE:\n{target_response[:2000]}"
                 )),
             ])
+            
+            from core.llm_resolver import record_budget_call
+            in_tok = result.usage_metadata.get("input_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
+            out_tok = result.usage_metadata.get("output_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
+            record_budget_call(config, node_name="self_referee_extract", input_tokens=in_tok, output_tokens=out_tok)
+
             raw = (result.content if isinstance(result.content, str)
                    else str(result.content)).strip()
             if raw and raw.upper() != "NONE" and len(raw) > 25:
@@ -474,7 +487,7 @@ def self_referee_node(state: AuditorState, config: RunnableConfig) -> dict[str, 
 
     # ── Build and send the meta-query ─────────────────────────────────────
     domain     = _classify_objective_domain(objective)
-    meta_query = _build_meta_query(objective, domain, llm)
+    meta_query = _build_meta_query(objective, domain, llm, config=config)
 
     # Send to the target model independently (separate from the main message
     # history so it doesn't pollute the attack conversation context)
@@ -484,6 +497,12 @@ def self_referee_node(state: AuditorState, config: RunnableConfig) -> dict[str, 
             HumanMessage(content=meta_query)
         ]
         response_obj = adapter.invoke_full(meta_messages)
+        
+        from core.llm_resolver import record_budget_call
+        in_tok = getattr(response_obj, "prompt_tokens", 0)
+        out_tok = getattr(response_obj, "completion_tokens", 0)
+        record_budget_call(config, node_name="self_referee_adapter", input_tokens=in_tok, output_tokens=out_tok)
+
         meta_response = (
             response_obj.content
             if hasattr(response_obj, "content")
@@ -495,7 +514,7 @@ def self_referee_node(state: AuditorState, config: RunnableConfig) -> dict[str, 
         )
 
         # Extract the probe from the target's own response
-        probe_text = _extract_probe(meta_response, objective, llm)
+        probe_text = _extract_probe(meta_response, objective, llm, config=config)
 
     except Exception as exc:  # noqa: BLE001
         logger.warning("[SelfReferee] Meta-query failed: %s", exc)

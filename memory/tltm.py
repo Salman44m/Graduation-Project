@@ -78,11 +78,11 @@ import json
 import logging
 import math
 import os
-import pickle
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from enum import Enum
 from pathlib import Path
+from core.paths import TLTM_VECTORS_DIR
 from typing import Any
 
 import faiss
@@ -100,7 +100,7 @@ DEFAULT_VECTOR_DIM: int        = 384
 OPENAI_VECTOR_DIM: int         = 1536
 """Embedding dimension for OpenAI text-embedding-3-small."""
 
-DEFAULT_TLTM_PATH: str         = "data/memory/tltm_vectors"
+DEFAULT_TLTM_PATH: str         = str(TLTM_VECTORS_DIR)
 """Default storage directory (relative to project root)."""
 
 TEMPORAL_DECAY_DAYS: float     = 30.0
@@ -457,7 +457,7 @@ class TLTMStore:
 
     def _meta_path(self, model_id: str) -> Path:
         safe = model_id.replace("/", "_").replace(":", "_")
-        return self.storage_path / f"{safe}.meta.pkl"
+        return self.storage_path / f"{safe}.meta.json"
 
     def _load_or_create(self, model_id: str) -> None:
         """Lazily load (or create) the FAISS index and metadata for ``model_id``."""
@@ -470,8 +470,8 @@ class TLTMStore:
         if idx_path.exists() and meta_path.exists():
             try:
                 self._indices[model_id]  = faiss.read_index(str(idx_path))
-                with open(meta_path, "rb") as f:
-                    raw = pickle.load(f)
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
                 # Re-inflate to ExperienceRecord dataclasses if stored as dicts
                 records: list[ExperienceRecord] = []
                 for item in raw:
@@ -501,8 +501,9 @@ class TLTMStore:
         meta_path = self._meta_path(model_id)
         try:
             faiss.write_index(self._indices[model_id], str(idx_path))
-            with open(meta_path, "wb") as f:
-                pickle.dump(self._metadata[model_id], f)
+            with open(meta_path, "w", encoding="utf-8") as f:
+                records_dict = [asdict(record) for record in self._metadata[model_id]]
+                json.dump(records_dict, f, ensure_ascii=False, indent=2)
             logger.debug(
                 "[TLTM] Saved %d records for model '%s'",
                 len(self._metadata[model_id]), model_id,

@@ -1,0 +1,8 @@
+Extracted Intel for Session livefire-5265bcce
+==================================================
+
+Epistemic Anchors:
+
+RMCE Triggers:
+
+Role Inversion Corrections:
