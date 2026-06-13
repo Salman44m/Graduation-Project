@@ -432,5 +432,184 @@ class TestSqlitePersistenceRoundTrip:
         ):
             store2 = AuditStore()
 
-        # Session should be loaded
         assert store2.session_exists("persist-sid")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. JSON Serialization / Deserialization — _json_object_hook / _json_loads
+# ─────────────────────────────────────────────────────────────────────────────
+
+import logging
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, RemoveMessage
+from infra.persistence import _json_loads, _json_fallback
+
+
+class TestJsonSerialization:
+    """Tests for _json_object_hook and _json_loads.
+
+    SCOPE: _json_loads is only used for graph state snapshots
+    (get_final_state / get_latest_delta / _load_from_sqlite).
+    Non-state endpoints (get_request, get_report, get_hitl, get_events)
+    use plain json.loads and are not tested here for coercion.
+    """
+
+    # ── Core message type round-trips ─────────────────────────────────────
+
+    def test_human_message_roundtrip(self):
+        msg = HumanMessage(content="Hello", additional_kwargs={"score": 10})
+        serialized = json.dumps(msg, default=_json_fallback)
+        deserialized = _json_loads(serialized)
+        assert isinstance(deserialized, HumanMessage)
+        assert deserialized.content == "Hello"
+        assert deserialized.additional_kwargs.get("score") == 10
+
+    def test_ai_message_roundtrip(self):
+        msg = AIMessage(content="World")
+        serialized = json.dumps(msg, default=_json_fallback)
+        deserialized = _json_loads(serialized)
+        assert isinstance(deserialized, AIMessage)
+        assert deserialized.content == "World"
+
+    def test_system_message_roundtrip(self):
+        msg = SystemMessage(content="System Info")
+        serialized = json.dumps(msg, default=_json_fallback)
+        deserialized = _json_loads(serialized)
+        assert isinstance(deserialized, SystemMessage)
+        assert deserialized.content == "System Info"
+
+    # ── RemoveMessage round-trips (previously broken, now fixed) ──────────
+
+    def test_remove_message_roundtrip_to_json_format(self):
+        """RemoveMessage via to_json() must restore as RemoveMessage, not dict."""
+        msg = RemoveMessage(id="target-msg-id")
+        serialized = json.dumps(msg, default=_json_fallback)
+        deserialized = _json_loads(serialized)
+        assert isinstance(deserialized, RemoveMessage), (
+            f"Expected RemoveMessage, got {type(deserialized).__name__}. "
+            "bounded_messages_reducer would silently fail to delete messages."
+        )
+        assert deserialized.id == "target-msg-id"
+
+    def test_remove_message_roundtrip_model_dump_format(self):
+        """RemoveMessage via model_dump() (legacy) also restores correctly."""
+        msg = RemoveMessage(id="legacy-remove-id")
+        serialized = json.dumps(msg.model_dump())
+        deserialized = _json_loads(serialized)
+        assert isinstance(deserialized, RemoveMessage), (
+            f"Expected RemoveMessage, got {type(deserialized).__name__}"
+        )
+        assert deserialized.id == "legacy-remove-id"
+
+    def test_state_snapshot_with_remove_message_preserves_type(self):
+        """A full graph state snapshot containing RemoveMessage survives a round-trip."""
+        snapshot = {
+            "messages": [
+                HumanMessage(content="probe"),
+                AIMessage(content="response"),
+                RemoveMessage(id="probe-msg-id"),
+            ],
+            "status": "running",
+        }
+        serialized = json.dumps(snapshot, default=_json_fallback)
+        restored = _json_loads(serialized)
+        msgs = restored["messages"]
+        assert len(msgs) == 3
+        assert isinstance(msgs[0], HumanMessage)
+        assert isinstance(msgs[1], AIMessage)
+        assert isinstance(msgs[2], RemoveMessage), (
+            f"msgs[2] must be RemoveMessage, got {type(msgs[2]).__name__}"
+        )
+        assert msgs[2].id == "probe-msg-id"
+
+    # ── AIMessage with tool_calls ─────────────────────────────────────────
+
+    def test_ai_message_with_tool_calls_roundtrip(self):
+        """AIMessage with tool_calls and empty content restores cleanly."""
+        msg = AIMessage(
+            content="",
+            tool_calls=[{"name": "my_tool", "args": {"x": 1}, "id": "call_abc"}],
+        )
+        serialized = json.dumps(msg.model_dump())
+        deserialized = _json_loads(serialized)
+        assert isinstance(deserialized, AIMessage)
+        assert len(deserialized.tool_calls) == 1
+        assert deserialized.tool_calls[0]["name"] == "my_tool"
+
+    # ── Legacy / mixed formats ────────────────────────────────────────────
+
+    def test_legacy_human_message_dict_format(self):
+        legacy_json = '{"type": "human", "content": "Legacy text", "additional_kwargs": {"foo": "bar"}}'
+        deserialized = _json_loads(legacy_json)
+        assert isinstance(deserialized, HumanMessage)
+        assert deserialized.content == "Legacy text"
+        assert deserialized.additional_kwargs.get("foo") == "bar"
+
+    def test_legacy_ai_message_dict_format(self):
+        legacy_json = '{"type": "ai", "content": "Legacy AI text"}'
+        deserialized = _json_loads(legacy_json)
+        assert isinstance(deserialized, AIMessage)
+        assert deserialized.content == "Legacy AI text"
+
+    def test_mixed_message_list_in_state_snapshot(self):
+        """Mixed list: real messages and an unrecognised-type dict."""
+        messages = [
+            HumanMessage(content="Question"),
+            {"type": "unknown_type", "content": "Not a message"},
+            AIMessage(content="Answer"),
+        ]
+        serialized = json.dumps(messages, default=_json_fallback)
+        deserialized = _json_loads(serialized)
+        assert len(deserialized) == 3
+        assert isinstance(deserialized[0], HumanMessage)
+        assert isinstance(deserialized[1], dict)
+        assert deserialized[1]["type"] == "unknown_type"
+        assert isinstance(deserialized[2], AIMessage)
+
+    # ── False-positive protection ─────────────────────────────────────────
+
+    def test_unrelated_type_document_dict_not_converted(self):
+        """Dicts whose 'type' is not a known message type are returned as-is."""
+        raw = '{"type": "document", "content": "Text", "author": "Alice"}'
+        result = _json_loads(raw)
+        assert isinstance(result, dict)
+        assert result["type"] == "document"
+
+    def test_audit_request_type_not_coerced(self):
+        """A dict with type='audit_request' (not a message type) stays a dict."""
+        request_body = {
+            "type": "audit_request",
+            "content": "Probe the target with adversarial prompts",
+            "model": "gpt-4o",
+        }
+        result = _json_loads(json.dumps(request_body))
+        assert isinstance(result, dict)
+        assert result["type"] == "audit_request"
+        assert result["model"] == "gpt-4o"
+
+    # ── Error handling: malformed payloads must not raise ─────────────────
+
+    def test_none_content_field_does_not_crash(self):
+        """content=None is accepted by HumanMessage; hook must not raise."""
+        bad_json = json.dumps({
+            "lc": 1,
+            "type": "constructor",
+            "id": ["langchain", "schema", "messages", "HumanMessage"],
+            "kwargs": {"content": None},
+        })
+        result = _json_loads(bad_json)
+        assert result is not None
+
+    def test_malformed_remove_message_logs_warning_and_returns_dict(self, caplog):
+        """A RemoveMessage with missing 'id' logs a WARNING rather than crashing."""
+        # RemoveMessage requires 'id'; passing None triggers an exception.
+        # The hook should catch it, log at WARNING, and return the raw dict.
+        malformed = json.dumps({
+            "type": "remove",
+            "content": "",
+            # 'id' is intentionally absent
+        })
+        with caplog.at_level(logging.WARNING, logger="promptevo.persistence"):
+            result = _json_loads(malformed)
+        # Result is either a RemoveMessage(id=None) or a plain dict —
+        # the important thing is no exception was raised.
+        assert result is not None

@@ -31,6 +31,7 @@ def _count_agent_invocations(mock_invoke, agent_name):
 
 def test_dead_ends_extracted_after_pruning():
     state = default_state(goal="test objective", target_model="model-x", session_id="s1")
+    state["grooming_phase_active"] = False
     state["target_model_id"] = ""
     state["target_defense_profile"] = {}
     state["crescendo_plan"] = ["skip"]

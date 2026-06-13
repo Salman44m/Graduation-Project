@@ -58,6 +58,7 @@ from core.graph import (
     _REPORTER, _ANALYST, _ATTACK_SWARM, _TARGET, _BRANCH_EVAL,
     _DECOMPOSER, _COMBINER, _JUDGE, _POOL, _HITL, _CLASSIFIER,
     _SELF_REFEREE, _GCI, _RMCE, _REMEDIATION, _SCOUT,
+    _INTEL_UPDATER,
     MAX_SESSION_TURNS, MAX_RMCE_META_LEVEL,
 )
 from core.state import default_state, AuditorState
@@ -71,6 +72,8 @@ from core.constants import BUDGET
 def _state(**overrides) -> AuditorState:
     """Return default_state() with specific fields overridden."""
     s = dict(default_state("test goal"))
+    # Non-grooming routing tests assume attack phase (default_state enables grooming).
+    s["grooming_phase_active"] = False
     s.update(overrides)
     return AuditorState(**s)
 
@@ -83,11 +86,11 @@ class TestRouteAfterScout:
 
     def test_error_status_routes_to_reporter(self):
         state = _state(attack_status="error")
-        assert route_after_scout(state) == _REPORTER
+        assert route_after_scout(state) == _INTEL_UPDATER
 
     def test_route_decision_reporter_routes_to_reporter(self):
         state = _state(route_decision="reporter")
-        assert route_after_scout(state) == _REPORTER
+        assert route_after_scout(state) == _INTEL_UPDATER
 
     def test_route_decision_analyst_bypass_routes_to_analyst(self):
         state = _state(route_decision="analyst_bypass")
@@ -106,7 +109,7 @@ class TestRouteAfterScout:
     def test_error_takes_priority_over_route_decision(self):
         """Error status overrides route_decision='analyst_bypass'."""
         state = _state(attack_status="error", route_decision="analyst_bypass")
-        assert route_after_scout(state) == _REPORTER
+        assert route_after_scout(state) == _INTEL_UPDATER
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -118,37 +121,37 @@ class TestRouteFromAnalyst:
     def test_budget_exhausted_by_turns_routes_to_reporter(self):
         """Circuit breaker: turn_count >= MAX → reporter."""
         state = _state(turn_count=MAX_SESSION_TURNS)
-        assert route_from_analyst(state) == _REPORTER
+        assert route_from_analyst(state) == _INTEL_UPDATER
 
     def test_budget_exceeds_max_routes_to_reporter(self):
         """Even one turn over max must hit reporter."""
         state = _state(turn_count=MAX_SESSION_TURNS + 5)
-        assert route_from_analyst(state) == _REPORTER
+        assert route_from_analyst(state) == _INTEL_UPDATER
 
     def test_success_status_routes_to_reporter(self):
         """Terminal status 'success' → reporter."""
         state = _state(attack_status="success", turn_count=5)
-        assert route_from_analyst(state) == _REPORTER
+        assert route_from_analyst(state) == _INTEL_UPDATER
 
     def test_failure_status_routes_to_reporter(self):
         """Terminal status 'failure' → reporter."""
         state = _state(attack_status="failure", turn_count=5)
-        assert route_from_analyst(state) == _REPORTER
+        assert route_from_analyst(state) == _INTEL_UPDATER
 
     def test_exhausted_status_routes_to_reporter(self):
         """Terminal status 'exhausted' → reporter."""
         state = _state(attack_status="exhausted", turn_count=5)
-        assert route_from_analyst(state) == _REPORTER
+        assert route_from_analyst(state) == _INTEL_UPDATER
 
     def test_error_status_routes_to_reporter(self):
         """Terminal status 'error' → reporter."""
         state = _state(attack_status="error", turn_count=5)
-        assert route_from_analyst(state) == _REPORTER
+        assert route_from_analyst(state) == _INTEL_UPDATER
 
     def test_explicit_terminal_decision_routes_to_reporter(self):
         """route_decision='terminal' → reporter (explicit analyst command)."""
         state = _state(route_decision="terminal", turn_count=5)
-        assert route_from_analyst(state) == _REPORTER
+        assert route_from_analyst(state) == _INTEL_UPDATER
 
     def test_explicit_resurrect_routes_to_attack_swarm(self):
         """route_decision='resurrect' → attack_swarm (fresh beam)."""
@@ -180,7 +183,7 @@ class TestRouteFromAnalyst:
         state = _state(
             cooperation_score=0.1,  # below COOP_SCOUT_THRESHOLD=0.60
             turn_count=0,
-            route_decision="attack_swarm",
+            route_decision="",  # must not hit grooming-exit attack vector block
         )
         assert route_from_analyst(state) == _SCOUT
 
@@ -442,7 +445,7 @@ class TestRouteAfterTarget:
 
     def test_error_routes_to_reporter(self):
         state = _state(attack_status="error")
-        assert route_after_target(state) == _REPORTER
+        assert route_after_target(state) == _INTEL_UPDATER
 
     def test_success_routes_to_remediation(self):
         state = _state(attack_status="success")
@@ -519,7 +522,7 @@ class TestRouteFromJudge:
 
     def test_failure_status_routes_to_reporter(self):
         state = _state(attack_status="failure", prometheus_score=1.0, turn_count=5)
-        assert route_from_judge(state) == _REPORTER
+        assert route_from_judge(state) == _INTEL_UPDATER
 
     def test_high_score_in_progress_routes_to_remediation(self):
         """Score >= 4.0 with in_progress status → jailbreak confirmed → remediation."""
@@ -584,15 +587,15 @@ class TestRoutePoolCombined:
 
     def test_success_routes_to_reporter(self):
         state = _state(attack_status="success", turn_count=5)
-        assert _route_pool_combined(state) == _REPORTER
+        assert _route_pool_combined(state) == _INTEL_UPDATER
 
     def test_exhausted_routes_to_reporter(self):
         state = _state(attack_status="exhausted", turn_count=5)
-        assert _route_pool_combined(state) == _REPORTER
+        assert _route_pool_combined(state) == _INTEL_UPDATER
 
     def test_turn_limit_routes_to_reporter(self):
         state = _state(attack_status="in_progress", turn_count=MAX_SESSION_TURNS)
-        assert _route_pool_combined(state) == _REPORTER
+        assert _route_pool_combined(state) == _INTEL_UPDATER
 
     def test_in_progress_routes_to_analyst(self):
         state = _state(attack_status="in_progress", turn_count=5)
@@ -627,7 +630,7 @@ class TestRoutingEdgeCases:
     def test_route_from_analyst_budget_check_exact_boundary(self):
         """Exactly at MAX_SESSION_TURNS must trigger circuit breaker."""
         state = _state(turn_count=MAX_SESSION_TURNS, attack_status="in_progress")
-        assert route_from_analyst(state) == _REPORTER
+        assert route_from_analyst(state) == _INTEL_UPDATER
 
     def test_route_from_analyst_one_below_max_does_not_trigger_breaker(self):
         """One turn below MAX must NOT trigger circuit breaker."""

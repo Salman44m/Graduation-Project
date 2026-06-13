@@ -1,0 +1,19 @@
+version: "1.0.0"
+nodes:
+  intel_retriever:
+    writes: [historical_intel, graph_retrieval_context, mined_failures]
+  scout:
+    writes: [messages, epistemic_anchors]
+  analyst:
+    writes: [defense_fingerprint, vulnerability_profile, attack_plan, curriculum_plan, curriculum_stage, route_decision]
+  attack_swarm:
+    reads: [attack_plan, vulnerability_profile, strategy_memory]
+    writes: [candidate_branches, messages]
+  experience_pool:
+    writes: [strategy_memory]
+    side_effects: [tltm_store, threat_graph_sync]
+  intel_updater:
+    side_effects: [tltm_intel_store, threat_graph_session, pattern_miner, dataset_builder]
+    writes: [mined_patterns, mined_failures]
+  judge_and_score:
+    writes: [prometheus_score, rahs_score, judge_ensemble_scores, latest_feedback]

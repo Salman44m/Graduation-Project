@@ -49,7 +49,9 @@ References
 from __future__ import annotations
 
 import logging
+import random
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -72,6 +74,88 @@ SCORE_SUCCESS_THRESHOLD: float = 4.0
 
 from core.constants import RETRY
 MAX_RETRIES: int = RETRY.default
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RETRY BACKOFF PARAMETERS
+# Mirrors the pattern used by LangChainTargetAdapter (adapters/langchain_adapter.py)
+# but applied directly here because the judge calls llm.invoke() raw — it is
+# NOT wrapped in LangChainTargetAdapter and therefore does not inherit that
+# adapter's tenacity backoff.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_BACKOFF_BASE_WAIT: float = 2.0
+"""Initial wait in seconds before the first retry (doubles per subsequent attempt)."""
+
+_BACKOFF_MAX_WAIT: float = 60.0
+"""Hard ceiling on retry wait time in seconds."""
+
+_BACKOFF_JITTER: float = 1.0
+"""Maximum random jitter (seconds) added per retry to prevent thundering-herd
+on shared quota deployments where multiple parallel branches hit the same
+judge LLM simultaneously."""
+
+
+def _is_transient_judge_error(exc: Exception) -> bool:
+    """Return True for API errors that warrant a backoff-and-retry.
+
+    Transient errors: rate limits (429), service unavailable (503), network
+    timeouts, and any other 5xx server-side failure.
+
+    Non-transient errors (auth failures, context-length exceeded) are NOT
+    retried — they indicate a configuration problem that will not resolve
+    itself within the backoff window.
+    """
+    msg    = str(exc).lower()
+    status = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
+    return (
+        status == 429
+        or status == 503
+        or "rate limit" in msg
+        or "ratelimit" in msg
+        or "quota" in msg
+        or "resourceexhausted" in msg
+        or "timeout" in msg
+        or "timed out" in msg
+        or (status is not None and 500 <= int(status) < 600)
+    )
+
+
+def _compute_judge_backoff(attempt: int, exc: Exception) -> float:
+    """Return seconds to sleep before the next retry attempt.
+
+    Uses bounded exponential backoff with jitter::
+
+        wait = min(BASE * 2^(attempt-1), MAX) + uniform(0, JITTER)
+
+    If the provider supplies a ``Retry-After`` header on the exception response,
+    that value is honoured (capped at ``_BACKOFF_MAX_WAIT``) so the client
+    does not re-hit the API before the quota window resets.
+
+    Parameters
+    ──────────
+    attempt : int
+        1-indexed attempt number that just failed (first failure = 1).
+    exc : Exception
+        The exception that triggered the retry, checked for Retry-After.
+    """
+    # Honour provider-supplied Retry-After when available
+    response_obj = getattr(exc, "response", None)
+    headers: dict = getattr(response_obj, "headers", {}) or {}
+    retry_after_raw = headers.get("retry-after") or headers.get("Retry-After")
+    if retry_after_raw is not None:
+        try:
+            suggested = float(retry_after_raw)
+            wait = min(suggested, _BACKOFF_MAX_WAIT)
+            wait += random.uniform(0, _BACKOFF_JITTER)
+            return wait
+        except (ValueError, TypeError):
+            pass  # malformed header — fall through to exponential formula
+
+    # Standard formula: 2s, 4s, 8s … capped at 60s
+    wait = min(_BACKOFF_BASE_WAIT * (2 ** (attempt - 1)), _BACKOFF_MAX_WAIT)
+    wait += random.uniform(0, _BACKOFF_JITTER)
+    return wait
+
 
 # AdvJudge-Zero known control token patterns (beam-search discovered sequences)
 # These are the structural markers that AdvJudge-Zero appends to bias logit gap.
@@ -847,6 +931,19 @@ def prometheus_judge_node(
         except Exception as exc:   # noqa: BLE001
             last_error = str(exc)
             logger.error("[Prometheus] LLM error on attempt %d: %s", attempt, exc)
+            # Back off before the next retry for transient API failures (rate
+            # limits, 5xx, timeouts).  Non-transient errors (auth, context-
+            # length) pass through immediately — sleeping would not help.
+            # No sleep after the FINAL attempt (nothing left to retry).
+            is_last_attempt = attempt >= MAX_RETRIES + 1
+            if not is_last_attempt and _is_transient_judge_error(exc):
+                _sleep_secs = _compute_judge_backoff(attempt, exc)
+                logger.warning(
+                    "[Prometheus] Transient error on attempt %d/%d — "
+                    "backing off %.1fs before retry.",
+                    attempt, MAX_RETRIES + 1, _sleep_secs,
+                )
+                time.sleep(_sleep_secs)
 
     if rationale.prometheus_score == 0.0:
         logger.error(

@@ -47,6 +47,8 @@ from dotenv import load_dotenv
 # Load .env before anything else — override=False so shell vars take precedence
 load_dotenv(override=False)
 
+from core.constants import ATTACKER_MODEL, DEFAULT_MODEL, JUDGE_MODEL
+
 logger = logging.getLogger("promptevo.config")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,9 +88,13 @@ class PromptEvoSettings:
     openai_api_key:       str   = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     anthropic_api_key:    str   = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
     groq_api_key:         str   = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
+    groq_attacker_key:    str   = field(default_factory=lambda: os.getenv("GROQ_ATTACKER_KEY_1", ""))
+    groq_judge_key:       str   = field(default_factory=lambda: os.getenv("GROQ_JUDGE_KEY", ""))
+    gemini_summarize_key: str   = field(default_factory=lambda: os.getenv("Gemini_Summarize_KEY", ""))
     target_openai_key:    str   = field(default_factory=lambda: os.getenv("TARGET_OPENAI_API_KEY", ""))
     target_groq_key:      str   = field(default_factory=lambda: os.getenv("TARGET_GROQ_API_KEY", ""))
     target_anthropic_key: str   = field(default_factory=lambda: os.getenv("TARGET_ANTHROPIC_API_KEY", ""))
+    target_gemini_key:    str   = field(default_factory=lambda: os.getenv("TARGET_GEMINI_KEY", ""))
 
     # ── Storage ───────────────────────────────────────────────────────────
     faiss_index_path:     str   = field(default_factory=lambda: os.getenv("FAISS_INDEX_PATH", "data/memory/tltm_vectors"))
@@ -124,6 +130,16 @@ class PromptEvoSettings:
     tltm_enabled:           bool  = field(default_factory=lambda: os.getenv("TLTM_ENABLED", "false").lower() == "true")
     gltm_auto_save:         bool  = field(default_factory=lambda: os.getenv("GLTM_AUTO_SAVE", "true").lower() == "true")
     enable_red_debate:      bool  = field(default_factory=lambda: os.getenv("ENABLE_RED_DEBATE", "false").lower() == "true")
+    # Phase 1 Capability F: the 3-judge ensemble (safety / reasoning / exploit) is
+    # ON by default.  Each judge turn costs 3 LLM calls instead of 1; set
+    # ENABLE_JUDGE_ENSEMBLE=false to opt out in cost-constrained deployments.
+    # When disabled, the system falls back to the single Prometheus judge node.
+    enable_judge_ensemble:  bool  = field(default_factory=lambda: os.getenv("ENABLE_JUDGE_ENSEMBLE", "true").lower() == "true")
+
+    research_log_include_payloads: bool = field(
+        default_factory=lambda: os.getenv("RESEARCH_LOG_INCLUDE_PAYLOADS", "false").lower() == "true"
+    )
+    research_dataset_path:  str   = field(default_factory=lambda: os.getenv("RESEARCH_DATASET_PATH", ""))
     log_level:              str   = field(default_factory=lambda: os.getenv("LOG_LEVEL", "WARNING").upper())
 
     # ── Security settings ───────────────────────────────────────────────
@@ -215,17 +231,29 @@ _circuit_breaker = _ProviderCircuitBreaker(
 )
 
 
-def _resolve_api_key(provider: str) -> str | None:
+def _resolve_api_key(provider: str, role: str = "") -> str | None:
+    """Return the best available API key for the given provider and role.
+
+    Resolution order for Groq:
+      Judge  → GROQ_JUDGE_KEY → GROQ_ATTACKER_KEY_1 → GROQ_API_KEY
+      Others → GROQ_ATTACKER_KEY_1 → GROQ_API_KEY
+    """
     prov = provider.lower()
-    if prov == "deepseek": return settings.openai_api_key
-    if prov == "anthropic": return settings.anthropic_api_key
-    if prov == "openai": return settings.openai_api_key
-    if prov == "groq": return getattr(settings, "groq_api_key", None)
+    if prov == "anthropic": return settings.anthropic_api_key or None
+    if prov == "openai":    return settings.openai_api_key or None
+    if prov == "gemini":    return settings.gemini_summarize_key or None
+    if prov == "groq":
+        # Prefer role-specific keys; fall back to the generic GROQ_API_KEY
+        if role.lower() == "judge" and settings.groq_judge_key:
+            return settings.groq_judge_key
+        if settings.groq_attacker_key:
+            return settings.groq_attacker_key
+        return settings.groq_api_key or None
     return None
 
 def _build_model_safe(provider: str, model: str, temperature: float, role: str) -> Any:
     from core.llm_factory import create_chat_model, LLMFactoryError
-    key = _resolve_api_key(provider)
+    key = _resolve_api_key(provider, role=role)
     if not key:
         return None
     try:
@@ -241,9 +269,14 @@ def _auto_detect_provider_and_build_with_cb(
 ) -> Any:
     if provider_hint:
         prov = provider_hint.lower()
-        if not _resolve_api_key(prov):
+        if not _resolve_api_key(prov, role=role):
             from core.llm_factory import MissingAPIKeyError
-            key_map = {"openai": "OPENAI_API_KEY", "deepseek": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "groq": "GROQ_API_KEY"}
+            key_map = {
+                "openai":    "OPENAI_API_KEY",
+                "anthropic": "ANTHROPIC_API_KEY",
+                "groq":      "GROQ_ATTACKER_KEY_1 / GROQ_JUDGE_KEY",
+                "gemini":    "Gemini_Summarize_KEY",
+            }
             key_name = key_map.get(prov, f"{prov.upper()}_API_KEY")
             raise MissingAPIKeyError(f"No API key found for {prov}. Please add {key_name} to your .env file and restart.")
         if _circuit_breaker.is_open(prov):
@@ -258,8 +291,8 @@ def _auto_detect_provider_and_build_with_cb(
                 _circuit_breaker.record_failure(prov)
                 logger.warning("[CircuitBreaker] %s failed: %s", provider_hint, exc)
 
-    # Automatic failover chain
-    for prov, mdl in [("deepseek", ATTACKER_MODEL), ("openai", DEFAULT_MODEL), ("anthropic", JUDGE_MODEL), ("groq", "llama-3.3-70b-versatile")]:
+    # Automatic failover chain: try remaining providers in priority order
+    for prov, mdl in [("openai", DEFAULT_MODEL), ("anthropic", JUDGE_MODEL), ("groq", "llama-3.3-70b-versatile"), ("gemini", settings.summariser_model)]:
         if prov == provider_hint.lower() or _circuit_breaker.is_open(prov): continue
         if not _resolve_api_key(prov): continue
         m = model_hint or mdl
@@ -391,18 +424,7 @@ def get_target_adapter() -> Any:
 
         try:
             from adapters.langchain_adapter import LangChainTargetAdapter
-            if provider == "deepseek":
-                key = settings.target_openai_key or settings.openai_api_key
-                if not key:
-                    from core.llm_factory import MissingAPIKeyError
-                    raise MissingAPIKeyError("No API key found for deepseek. Please add TARGET_OPENAI_API_KEY or OPENAI_API_KEY to your .env file and restart.")
-                from langchain_openai import ChatOpenAI
-                return LangChainTargetAdapter(
-                    model       = ChatOpenAI(model=model, api_key=key, base_url="https://agentrouter.org/v1"),
-                    max_retries = settings.target_max_retries,
-                    timeout     = settings.target_timeout,
-                )
-            elif provider == "openai":
+            if provider == "openai":
                 key = settings.target_openai_key or settings.openai_api_key
                 if not key:
                     from core.llm_factory import MissingAPIKeyError
@@ -440,23 +462,47 @@ def get_target_adapter() -> Any:
                     )
                 except ImportError:
                     pass
+            elif provider == "gemini":
+                key = settings.target_gemini_key or settings.gemini_summarize_key
+                if not key:
+                    from core.llm_factory import MissingAPIKeyError
+                    raise MissingAPIKeyError("No API key found for gemini. Please add TARGET_GEMINI_KEY or Gemini_Summarize_KEY to your .env file and restart.")
+                from core.llm_factory import create_chat_model, Provider
+                model_instance = create_chat_model(
+                    provider=Provider.GEMINI,
+                    model_name=model,
+                    temperature=0.0,
+                    api_key=key,
+                    timeout=settings.target_timeout
+                )
+                return LangChainTargetAdapter(
+                    model=model_instance,
+                    max_retries=settings.target_max_retries,
+                    timeout=settings.target_timeout,
+                )
+            else:
+                raise ValueError(f"Unsupported Target Provider: '{provider}'. Please check your TARGET_PROVIDER in .env.")
         except Exception as exc:
             from core.llm_factory import MissingAPIKeyError
-            if isinstance(exc, MissingAPIKeyError):
+            if isinstance(exc, MissingAPIKeyError) or isinstance(exc, ValueError):
                 raise
             logger.warning("[Config] Target adapter construction failed: %s", exc)
+            raise
 
-    # Attempt 3: MockTargetAdapter fallback
-    from adapters.base_adapter import MockTargetAdapter
-    return MockTargetAdapter(
-        responses=[
-            "I understand your request. Let me think through this carefully.",
-            "I'm sorry, that request falls outside my operational guidelines.",
-            "From an academic perspective, here is what I can share on this topic.",
-            "I appreciate the detailed context, but I cannot provide that specific information.",
-        ],
-        model_id=settings.target_model or "mock-target",
-    )
+    # Attempt 3: MockTargetAdapter fallback ONLY if explicitly set to mock or dry_run
+    if settings.dry_run or settings.target_provider.lower() == "mock":
+        from adapters.base_adapter import MockTargetAdapter
+        return MockTargetAdapter(
+            responses=[
+                "I understand your request. Let me think through this carefully.",
+                "I'm sorry, that request falls outside my operational guidelines.",
+                "From an academic perspective, here is what I can share on this topic.",
+                "I appreciate the detailed context, but I cannot provide that specific information.",
+            ],
+            model_id=settings.target_model or "mock-target",
+        )
+    else:
+        raise ValueError("TARGET_PROVIDER is unset or invalid. Set it to 'gemini', 'openai', 'anthropic', 'groq', 'ollama', or 'mock'.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -38,7 +38,7 @@ from core.state import (
     validate_state_update,
     ALL_FIELDS,
 )
-from core.constants import SessionBudget
+from core.constants import SessionBudget, SessionMetrics
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -78,23 +78,20 @@ class TestBoundedMessagesReducer:
         assert result[0] == left[0]  # System message preserved
 
     def test_exceeds_cap_preserves_anchors(self):
-        """When over cap, the first 2 anchor messages must always be preserved."""
-        # Build a list of 120 messages (> default cap of 100)
+        """When over cap, the first anchor message (System) must always be preserved."""
+        # Build a list of messages > new default cap of 8
         anchor_system = self._sys(0)
-        anchor_human = self._human(0)
-        left = [anchor_system, anchor_human] + [self._ai(i) for i in range(118)]
+        left = [anchor_system] + [self._ai(i) for i in range(20)]
         right = [self._human(999)]
 
         result = bounded_messages_reducer(left, right)
 
-        # Anchors always present
+        # Anchor system message always present
         assert result[0].content == anchor_system.content
-        assert result[1].content == anchor_human.content
 
     def test_exceeds_cap_preserves_recency(self):
-        """When over cap, the most recent 40 messages must be present."""
-        # 50 anchor+middle messages, then 50 recent
-        left = [self._sys(0), self._human(0)] + [self._ai(i) for i in range(98)]
+        """When over cap, the most recent messages must be present."""
+        left = [self._sys(0)] + [self._ai(i) for i in range(20)]
         right = [self._human(9999)]  # This is the newest
 
         result = bounded_messages_reducer(left, right)
@@ -103,12 +100,11 @@ class TestBoundedMessagesReducer:
         assert any(m.content == "Human message 9999" for m in result)
 
     def test_result_never_exceeds_max(self):
-        """Result length must never exceed 100 (the default MAX_STATE_MESSAGES)."""
-        # Construct 200 messages
-        left = [self._ai(i) for i in range(100)]
-        right = [self._human(i) for i in range(100)]
+        """Result length must never exceed 8 (the new default MAX_STATE_MESSAGES)."""
+        left = [self._ai(i) for i in range(20)]
+        right = [self._human(i) for i in range(20)]
         result = bounded_messages_reducer(left, right)
-        assert len(result) <= 100
+        assert len(result) <= 8
 
     def test_pure_function_no_mutation(self):
         """Reducer must not mutate its input lists."""
@@ -471,3 +467,20 @@ class TestStateValidationHelpers:
         assert isinstance(state["turn_count"], int)
         assert state["session_id"] == "session-123"
         assert state["core_malicious_objective"] == "test goal"
+
+
+class TestSessionMetrics:
+    def test_routing_history_bounded(self):
+        from core.constants import ROUTING_HISTORY_MAXLEN
+        metrics = SessionMetrics(routing_history_maxlen=ROUTING_HISTORY_MAXLEN)
+        for i in range(ROUTING_HISTORY_MAXLEN + 10):
+            metrics.record_route("a", f"dest_{i}")
+        summary = metrics.summary()
+        assert len(summary["routing_decisions"]) == ROUTING_HISTORY_MAXLEN
+
+    def test_record_methods_fail_open(self):
+        metrics = SessionMetrics()
+        metrics.record_node_execution("node")
+        metrics.record_exception("node")
+        assert metrics.summary()["total_node_executions"] == 1
+        assert metrics.summary()["total_exceptions"] == 1

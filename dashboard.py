@@ -40,6 +40,8 @@ try:
 except ImportError:
     def configure_logging(**kw): pass  # noqa: E704
 
+from hitl.hitl_handler import build_hitl_context, _interrupt_value
+
 # ── Phase 2: DB persistence — safe to import; engine is lazy-initialised ──
 try:
     from infra.database import save_audit_report_to_db as _save_audit_to_db
@@ -75,7 +77,6 @@ def _init_store() -> tuple[dict, threading.Lock]:
 
 
 _audit_store, _audit_store_lock = _init_store()
-
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION STATE INIT  ← MUST run before ANY UI element is rendered
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,8 +130,9 @@ if not os.getenv("FAISS_INDEX_PATH"):
 # Lazy-import the heavy LangGraph machinery so page renders fast
 @st.cache_resource(show_spinner=False)
 def _get_langgraph():
-    from core.graph import app as lg_app
+    from core.graph import get_app
     import core.graph as _g
+    lg_app = get_app()   # build/retrieve the compiled CompiledStateGraph (never None on success)
     return lg_app, _g
 
 @st.cache_resource(show_spinner=False)
@@ -774,22 +776,12 @@ def _run_audit_thread(objective, target_model, session_id, lg_app, default_state
                     if node_name == "__interrupt__":
                         # Fetch the actual frozen state from the checkpointer
                         current_state = lg_app.get_state(graph_config).values
+                        hitl_payload = _interrupt_value(delta)
+                        if not hitl_payload:
+                            hitl_payload = build_hitl_context(current_state)
 
-                        payload_text = current_state.get("pending_payload", "")
-                        if not payload_text:
-                            branches = current_state.get("candidate_branches", [])
-                            if branches and isinstance(branches, list):
-                                payload_text = branches[0].get("payload_delivered", "")
-                        if not payload_text:
-                            msgs = current_state.get("messages", [])
-                            payload_text = msgs[-1].content if msgs else ""
-
-                        _set_hitl({
-                            "status":    "awaiting",
-                            "payload":   payload_text,
-                            "technique": current_state.get("active_persuasion_technique", ""),
-                            "turn":      len((store.get(session_id) or {}).get("events", [])),
-                        })
+                        hitl_payload["status"] = "awaiting_hitl"
+                        _set_hitl(hitl_payload)
                         print("[PromptEvo] HITL interrupt", flush=True)
                         return True
                     final.update(delta or {})
@@ -903,6 +895,11 @@ def _render_hitl_panel(hitl: dict) -> None:
     technique = hitl.get("technique", "")
     turn      = hitl.get("turn", "?")
     sid       = st.session_state.get("session_id")
+    graph_state = hitl.get("graph_state") or {}
+    stage = hitl.get("stage") or {}
+    attack_plan = hitl.get("attack_plan") or {}
+    risk = hitl.get("risk") or {}
+    memory = hitl.get("memory") or {}
 
     st.markdown("---")
     st.markdown("""
@@ -920,10 +917,34 @@ def _render_hitl_panel(hitl: dict) -> None:
     </div>
     """, unsafe_allow_html=True)
 
-    mc1, mc2 = st.columns(2)
+    if hitl.get("review_message"):
+        st.caption(hitl["review_message"])
+
+    # Summary metrics row
+    mc1, mc2, mc3, mc4 = st.columns(4)
     with mc1: st.metric("Turn", str(turn))
     with mc2: st.metric("PAP Technique", (technique[:22] if technique else "—"))
+    with mc3: st.metric("Risk", f"{risk.get('risk_label', 'unknown').upper()} ({risk.get('risk_score', 0.0):.2f})")
+    with mc4: st.metric("Confidence", f"{risk.get('confidence_score', 0.0):.2f}")
 
+    # Context (State + Stage)
+    with st.expander("Runtime Context (State & Stage)", expanded=True):
+        st.json({
+            "graph_state": graph_state,
+            "stage": stage,
+            "risk": risk,
+        })
+
+    # Retrieved memory
+    if any(memory.get(k) for k in ("historical_intel", "tltm_context", "strategy_memory", "graph_retrieval_context")):
+        with st.expander("Retrieved Memory", expanded=False):
+            st.json(memory)
+
+    # Decision / Attack Plan
+    with st.expander("Decision / Attack Plan", expanded=True):
+        st.json(attack_plan)
+
+    # Editable Payload
     st.markdown('<div class="section-header" style="margin-top:0.8rem;">📋 Payload for Review</div>', unsafe_allow_html=True)
 
     hitl_key = f"hitl_payload_{sid}"
@@ -1235,7 +1256,7 @@ else:
 
     # ── HITL Review Panel ────────────────────────────────────────────────
     hitl = st.session_state.get("hitl_data")
-    if hitl and hitl.get("status") == "awaiting":
+    if hitl and hitl.get("status") in ("awaiting", "awaiting_hitl"):
         _render_hitl_panel(hitl)
 
     # ── Auto-refresh while running ────────────────────────────────────────

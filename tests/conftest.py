@@ -19,20 +19,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-# ── Legacy broken test files (import names that don't exist in graph.py) ─────
-# These are excluded until graph.py exposes the expected symbols.
-# collect_ignore paths must be relative to the rootdir (project root), not conftest dir.
-import os as _os
-_tests_dir = _os.path.dirname(__file__)
-collect_ignore = [
-    _os.path.join(_tests_dir, "test_routing.py"),
-    _os.path.join(_tests_dir, "test_batch4_target_fail_closed.py"),
-]
-del _os, _tests_dir
-
 # ─── Production imports (read-only) ──────────────────────────────────────────
 from core.state import AuditorState, BranchDict, default_state, new_branch
-from core.constants import SessionBudget, THRESHOLD, BUDGET
+from core.constants import SessionBudget, SessionMetrics, THRESHOLD, BUDGET
 
 
 # ─────────────────────────────────────────────────────────────────────────────

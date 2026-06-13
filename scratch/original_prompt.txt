@@ -1,0 +1,250 @@
+<USER_REQUEST>
+You are performing a **full end-to-end diagnostic audit** of PromptEvo, an AI red-teaming framework built with LangGraph. Your job is to read the entire codebase systematically and produce a structured report of every bug, logic error, missing guard, and architectural risk you find — from the first line of initialization to the final output.
+
+Do NOT fix anything yet. Read, trace, and report only.
+
+---
+
+## STEP 1 — Codebase Discovery
+
+First, map the full project structure:
+- List every Python module (.py file) grouped by folder
+- Identify the main entrypoint(s) (e.g. main.py, run.py, cli.py)
+- Identify the LangGraph graph definition file(s)
+- Identify: session_factory.py, any judge/evaluator files, attacker/mutation files, config/env files, output/reporting files
+- Note any file that is imported but does not exist on disk
+
+---
+
+## STEP 2 — Phase-by-Phase Audit
+
+For each phase below, read every relevant file completely and answer every question. Quote the exact line(s) from the source when reporting an issue.
+
+---
+
+### PHASE 0 — Initialization & Configuration
+
+**ENV & Config loading:**
+- Is there a validation step that checks all required env vars before anything runs? If not, which vars could be missing silently?
+- Are API keys (Groq, Anthropic, Gemini, etc.) validated for format/presence at startup, or only at first use?
+- Is there a fallback if a provider key is missing? Does it fail gracefully or crash mid-run?
+- Are config values (model names, max tokens, temperatures) hardcoded in multiple places, or centralized?
+- Can the same config value have conflicting values in different files?
+
+**Session factory:**
+- What does `session_factory.py` produce? What object does it return?
+- Is there a risk of producing a session with an invalid or partial state?
+- Can two sessions share the same `thread_id` or `session_id`? What happens if they do?
+- Is there any cleanup if session creation fails halfway?
+
+**Checkpointer:**
+- Which checkpointer is used (MemorySaver, SqliteSaver, etc.)?
+- Is it initialized before the graph is compiled? Or after?
+- Are all LangGraph State fields JSON-serializable? List any field that contains a non-serializable type (custom class, set, object instance, etc.)
+- Is there a risk of checkpointer deserialization failure on resume?
+
+---
+
+### PHASE 1 — Attacker Agent
+
+**Seed prompt loading:**
+- Where do seed prompts come from? File? Hardcoded? Config?
+- What happens if the seed file is empty, missing, or malformed?
+- Is there a minimum seed count enforced?
+
+**Mutation engine:**
+- What mutation strategies exist? Are they all actually implemented (not just defined)?
+- Is there a limit on how many mutations can be generated per iteration?
+- Can mutation produce an empty string, None, or a duplicate of the original prompt?
+- Is there deduplication logic? What's the dedup scope (within session? globally?)
+- Can mutations grow unboundedly in size? Is there a max token/char limit on generated prompts?
+
+**Adversarial generation (LLM-based):**
+- Which model generates adversarial prompts? Is there a fallback if the model call fails?
+- Is the attacker's system prompt fixed or dynamic? Can it contradict itself across iterations?
+- Is context passed correctly to the attacker across turns (does it know previous attempts + scores)?
+- If the attacker model returns malformed output, is there a parser with error handling?
+
+**Rate limiting:**
+- Is there any rate-limit handling for the attacker's model provider?
+- Is there a retry mechanism? How many retries? With backoff?
+- What happens after max retries are exceeded — does the session crash or skip?
+
+---
+
+### PHASE 2 — Target Model Interaction
+
+**API call dispatch:**
+- Is there a unified interface for all target model providers (Groq, Anthropic, Gemini)?
+- For each provider, is the correct API format used (messages structure, role names, etc.)?
+- Is the prompt sent to the target model exactly as generated, or is it wrapped/modified? Is this wrapping consistent?
+- Is there any injection risk where attacker-generated content could escape the user role?
+
+**Timeout & error handling:**
+- Is there a timeout set on every API call? What is the value?
+- What happens on: HTTP 429 (rate limit), HTTP 500 (server error), network timeout, empty response?
+- Is the error caught at the call site, or does it propagate up and crash the graph node?
+- Is there a mock target model? Does it behave realistically enough to test the full pipeline?
+
+**Response parsing:**
+- Is the raw response always a string? Could it ever be None, a dict, or a list?
+- Is there validation that the response is non-empty before passing it to the judge?
+- Are there any assumptions about response format that could break with a different model?
+
+---
+
+### PHASE 3 — Judge / Evaluator (Prometheus)
+
+**Scoring logic:**
+- What is the judge's output format? Is it JSON? Free text with a number? A structured object?
+- Is the JSON parsed with a try/except? What is the fallback if parsing fails?
+- Can the judge return a score outside the expected range (e.g., negative, > 10, NaN)?
+- Is the score clamped or validated before being used in the loop decision?
+- Is there a case where the judge returns a valid score but for the wrong prompt (misaligned index)?
+
+**Threshold evaluation:**
+- Where is the success threshold defined? Is it a constant, config value, or magic number?
+- Is the threshold comparison correct (> vs >= vs <)?
+- What happens when the judge scores exactly at the threshold?
+
+**Feedback generation:**
+- Does the judge produce feedback that is passed back to the attacker?
+- Is the feedback format consistent with what the attacker expects?
+- Can feedback be None or empty? What does the attacker do in that case?
+
+**Prometheus-specific:**
+- Is the Prometheus judge's system prompt correctly formatted for the model being used?
+- Does the response format expected match what the Prometheus model actually returns?
+- Is there a check for the `[RESULT]` token or score indicator in the raw response?
+
+---
+
+### PHASE 4 — LangGraph Agentic Loop
+
+**Graph structure:**
+- How many nodes are in the graph? List them.
+- What is the edge structure? Are there any conditional edges?
+- Is there a START node and an END node properly defined?
+- Are there any unreachable nodes (nodes with no incoming edge except START)?
+- Are there any dead-end nodes (nodes with no outgoing edge except END)?
+
+**State management:**
+- What fields does the LangGraph State TypedDict contain?
+- Are all fields initialized in the initial state before the graph runs?
+- Are there any fields that are read before they are written (undefined read)?
+- When a node updates the state, does it return a full state dict or a partial update? Is the graph configured to handle partial updates (using `add_messages` or similar)?
+- Can the state grow unboundedly? (e.g., a list that appends every iteration with no trim)
+
+**Iteration control:**
+- Is there a `max_iterations` limit? Where is it defined and enforced?
+- Is the iteration counter incremented correctly on every loop pass?
+- Is there a termination condition beyond max_iterations? (e.g., success score reached)
+- What happens if both conditions are False — can the graph loop forever?
+- Is there a "no progress" detection (e.g., same score for N consecutive iterations)?
+
+**Checkpointer serialization in the loop:**
+- After each node, is the state checkpointed? Or only at the end?
+- If the process is interrupted mid-loop, what state is recovered on restart?
+- Are there any fields added dynamically to the state that were not in the original TypedDict? This will cause serialization failures.
+
+**Conditional edge routing:**
+- For each conditional edge, list the condition function and what it checks.
+- Can the condition return an unexpected value (not in the routing map)?
+- Is there a default/fallback route if the condition fails?
+
+---
+
+### PHASE 5 — Output & Reporting
+
+**Results aggregation:**
+- What data is collected per iteration? Per session?
+- Is there a risk of losing results if the session ends abnormally (crash vs graceful exit)?
+- Are results written incrementally or only at the end?
+
+**Report generation:**
+- What format is the report (JSON, CSV, HTML, Markdown)?
+- Is the report generation wrapped in try/except?
+- Can report generation fail silently (exception swallowed)?
+
+**Session cleanup:**
+- Are all API clients, file handles, and DB connections closed on exit?
+- Is cleanup done even if the session raises an exception (finally block or context manager)?
+- Is the checkpointer flushed/closed properly?
+
+---
+
+## STEP 3 — Cross-Cutting Concerns
+
+After completing all phases, audit these global concerns:
+
+**Missing limits inventory:**
+List every place where there is NO upper bound on:
+- Number of iterations
+- Number of mutations per iteration
+- Size of generated prompts (in tokens or characters)
+- Size of state fields (lists, message histories, etc.)
+- Number of API retries
+- Time spent in a single node
+- Total session duration
+For each missing limit, state: where the unbounded growth occurs, and what failure mode it leads to (OOM, infinite loop, API bill explosion, etc.)
+
+**Error propagation map:**
+Trace: if an exception is raised inside each of the following, what happens?
+- The attacker model call
+- The target model call  
+- The judge model call
+- A LangGraph node function
+- The checkpointer read/write
+Does the exception crash the whole graph? Get swallowed silently? Get logged? Trigger a retry?
+
+**Type safety:**
+- Are there any places where `None` is passed where a string is expected?
+- Are there any dict key accesses without `.get()` that could raise `KeyError`?
+- Are there any list index accesses without bounds checking?
+- Are there places where the wrong message role is used (e.g., `"system"` vs `"user"` vs `"human"`)?
+
+**Async / concurrency:**
+- Does any part of the code use `async/await`? If so, is every `await` inside an `async def`?
+- Are there any synchronous blocking calls inside async functions?
+- Is the LangGraph graph invoked with `.invoke()` or `.ainvoke()`? Is the calling context consistent?
+
+**Logging & observability:**
+- Is there a logging setup? Does it log at the right levels (DEBUG/INFO/WARNING/ERROR)?
+- Are exceptions logged with full tracebacks, or just the message?
+- Is there any way to know which iteration and which node the system is in at any given moment?
+
+---
+
+## STEP 4 — Final Report Format
+
+Produce your findings as a structured report with these sections:
+
+### 🔴 Critical Bugs
+Issues that will cause a crash or silent data loss. Include: file, line number, description, and the exact problematic code.
+
+### 🟠 Logic Errors  
+The code runs but produces wrong behavior. Include: file, line number, what it does vs what it should do.
+
+### 🟡 Missing Limits & Unbounded Loops
+Every place with no upper bound. Include: what grows, where, and worst-case consequence.
+
+### 🔵 Fragile Assumptions
+Code that works only under specific conditions. Include: the assumption, where it's made, and what breaks it.
+
+### ⚪ Missing Error Handling
+Places where exceptions aren't caught or aren't handled properly.
+
+### ✅ What's Working Well
+A brief list of parts that look solid and don't need attention.
+
+### 📊 Risk Summary Table
+A table with columns: Area | Severity | Issue Count | Top Risk
+
+Be exhaustive. Do not summarize or skip files. If a file is short, still read it completely. If you are uncertain about something, flag it as "needs verification" rather than skipping it.
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-06-12T15:49:44+03:00.
+</ADDITIONAL_METADATA>
+<USER_SETTINGS_CHANGE>
+The user changed setting `Model Selection` from None to Gemini 3.5 Flash (High). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.
+</USER_SETTINGS_CHANGE>

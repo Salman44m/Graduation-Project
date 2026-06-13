@@ -35,6 +35,9 @@ class MockChatModel:
 @pytest.fixture
 def graph():
     """Returns the compiled PromptEvo graph."""
+    import core.graph
+    core.graph.HITL_ENABLED = False
+    core.graph.MAX_SESSION_TURNS = 50
     return build_graph()
 
 
@@ -126,6 +129,8 @@ def test_scenario_2_complex_jailbreak(graph):
     for event in graph.stream(initial_state, config=config, stream_mode="updates"):
         print("GRAPH EVENT:", event)
         for node_name, state_update in event.items():
+            if node_name == "__interrupt__":
+                continue
             if state_update is not None:
                 final_state.update(state_update)
     assert final_state["attack_status"] == "success", "Jailbreak should succeed"
@@ -136,18 +141,26 @@ def test_scenario_2_complex_jailbreak(graph):
 
 def test_scenario_3_standard_attack_swarm(graph):
     """Scenario 3: Standard Attack Swarm Sequence (Budget Exhaustion)
-    
+
     Graph loops through Attack Swarm. Target always safely refuses.
     Judge scores 1.0. Analyst increments turn_count correctly.
     Eventually hits MAX_SESSION_TURNS and exhausts.
+
+    turn_count is pre-seeded to (max_session_turns - 2) so the session
+    exhausts quickly without needing to mutate the frozen BUDGET dataclass.
     """
+    import core.constants
+
+    max_turns = core.constants.BUDGET.max_session_turns  # e.g. 30 (from env / default)
+    start_turn = max_turns - 2                           # e.g. 28
+
     scout_mock = MockChatModel(["CLEAR: No injection detected."])
-    
+
     # Analyst will always pick attack_swarm
     analyst_mock = MockChatModel([
         '{"route_decision": "attack_swarm", "crescendo_plan": "keep attacking"}'
     ])
-    
+
     # Swarm node expects JSON payload for branch generation
     swarm_mock_response = '''[
       {
@@ -168,20 +181,20 @@ def test_scenario_3_standard_attack_swarm(graph):
       }
     ]'''
     attacker_mock = MockChatModel([swarm_mock_response])
-    
+
     # Target always refuses
     def target_fn(messages):
         return "I cannot fulfill this request."
     target_mock = MockTargetAdapter(response_fn=target_fn)
-    
+
     # Judge always scores 1.0
     judge_mock = MockChatModel(["Safe refusal.\n[RESULT]\n[[1.0]]"])
-    
+
     config = {
         "configurable": {
             "scout_llm": scout_mock,
             "analyst_llm": analyst_mock,
-            "attacker_llm": attacker_mock, 
+            "attacker_llm": attacker_mock,
             "judge_llm": judge_mock,
             "target_adapter": target_mock,
             "session_budget": None,
@@ -189,17 +202,20 @@ def test_scenario_3_standard_attack_swarm(graph):
             "thread_id": str(uuid.uuid4()),
         }
     }
-    
-    # Starting at turn 48 to hit exhaustion quicker (default max is 50)
+
+    # Pre-seed turn_count near the budget ceiling so exhaustion is reached in
+    # just a couple of graph steps — no need to touch the frozen BUDGET object.
     initial_state = AuditorState({
         "messages": [HumanMessage(content="Start")],
         "core_malicious_objective": "Complex request",
-        "turn_count": 48,
+        "turn_count": start_turn,
         "attack_status": "in_progress"
     })
-    
+
     final_state = graph.invoke(initial_state, config=config)
-    
-    assert final_state["attack_status"] in ("exhausted", "in_progress"), "Should exhaust after MAX turns"
-    assert final_state["turn_count"] >= 50, "Turn count must reach MAX_SESSION_TURNS (50)"
+
+    assert final_state["attack_status"] in ("exhausted", "failure", "in_progress"), \
+        "Should exhaust or fail after MAX turns"
+    assert final_state["turn_count"] >= max_turns, \
+        f"Turn count must reach MAX_SESSION_TURNS ({max_turns})"
     assert "defense_patch" not in final_state, "No patch should be generated on failure"

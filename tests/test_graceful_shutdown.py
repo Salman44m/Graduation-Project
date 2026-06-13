@@ -38,20 +38,33 @@ def test_active_session_tracking():
 
 @patch.dict("os.environ", {"PROMPTEVO_DEV_DISABLE_AUTH": "true", "ENVIRONMENT": "development"})
 def test_draining_rejects_new_sessions():
-    import api
-    import infra.security
-    infra.security._DEV_DISABLE_AUTH = True
-    
-    api._draining = True
-    
-    response = client.post(
-        "/api/v1/audit", 
-        json={"objective": "test objective 123", "target_model": "test-model"},
-        headers={"X-PromptEvo-Key": "mykey"}
-    )
-    
-    assert response.status_code == 503
-    assert "Server is shutting down" in response.json()["detail"]
+    # Dynamic imports ensure we always bind to the live module instances,
+    # not stale references that become wrong after other tests reload api.py.
+    import api as _api
+    from fastapi.testclient import TestClient as _TestClient
+    from infra.security import require_api_key as _require_api_key
+
+    _app = _api.app
+
+    # Bypass API-key validation so the only thing that matters is the 503 draining check
+    _app.dependency_overrides[_require_api_key] = lambda: "test-auth-key"
+    _client = _TestClient(_app, raise_server_exceptions=False)
+    try:
+        _api._draining = True
+
+        response = _client.post(
+            "/api/v1/audit",
+            json={"objective": "test objective 123", "target_model": "llama-3.1-8b-instant"},
+            headers={"X-PromptEvo-Key": "mykey"},
+        )
+
+        assert response.status_code == 503, (
+            f"Expected 503 while draining, got {response.status_code}: {response.text}"
+        )
+        assert "Server is shutting down" in response.json()["detail"]
+    finally:
+        _app.dependency_overrides.clear()
+        _api._draining = False
 
 @patch("api.get_audit_store")
 @patch("api.run_in_threadpool")

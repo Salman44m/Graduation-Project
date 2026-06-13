@@ -112,6 +112,97 @@ def _json_fallback(obj: Any) -> Any:
         return obj.model_dump()
     return str(obj)
 
+def _json_object_hook(d: dict) -> Any:
+    """Reconstruct LangChain BaseMessage objects from graph state JSON dicts.
+
+    Handles two serialization formats produced by ``_json_fallback``:
+
+    Branch 1 — LangChain ``to_json()`` envelope::
+
+        {"lc": 1, "type": "constructor",
+         "id": ["langchain", "schema", "messages", "<ClassName>"],
+         "kwargs": {"content": "...", "type": "..."}}
+
+    Branch 2 — ``model_dump()`` / legacy dict format::
+
+        {"type": "human"|"ai"|"system"|"remove", "content": "...", ...}
+
+    Only call this hook when deserialising **graph state snapshots**.  Do NOT
+    use it for API request/report/event/HITL payloads — those are plain dicts
+    and do not require message reconstruction.
+    """
+    # 1. LangChain to_json() format
+    if d.get("lc") == 1 and d.get("type") == "constructor" and "id" in d:
+        id_path = d["id"]
+        if isinstance(id_path, list) and len(id_path) > 0:
+            msg_type = id_path[-1]
+            if msg_type in ("HumanMessage", "AIMessage", "SystemMessage", "RemoveMessage"):
+                kwargs = d.get("kwargs", {})
+
+                # object_hook is called bottom-up: the inner ``kwargs`` dict may
+                # have already been reconstructed by Branch 2 below.
+                if type(kwargs).__name__ == msg_type:
+                    return kwargs
+
+                if isinstance(kwargs, dict):
+                    try:
+                        if msg_type == "HumanMessage":
+                            from langchain_core.messages import HumanMessage
+                            return HumanMessage(**kwargs)
+                        elif msg_type == "AIMessage":
+                            from langchain_core.messages import AIMessage
+                            return AIMessage(**kwargs)
+                        elif msg_type == "SystemMessage":
+                            from langchain_core.messages import SystemMessage
+                            return SystemMessage(**kwargs)
+                        elif msg_type == "RemoveMessage":
+                            from langchain_core.messages import RemoveMessage
+                            return RemoveMessage(**kwargs)
+                    except Exception as exc:
+                        logger.warning(
+                            "[Persistence] Failed to reconstruct %s from dict %r: %s",
+                            msg_type, d, exc,
+                        )
+
+    # 2. model_dump() / legacy dict format
+    if "type" in d and "content" in d:
+        msg_type = d["type"]
+        if msg_type in ("human", "ai", "system", "remove"):
+            kwargs = {k: v for k, v in d.items() if k != "type"}
+            try:
+                if msg_type == "human":
+                    from langchain_core.messages import HumanMessage
+                    return HumanMessage(**kwargs)
+                elif msg_type == "ai":
+                    from langchain_core.messages import AIMessage
+                    return AIMessage(**kwargs)
+                elif msg_type == "system":
+                    from langchain_core.messages import SystemMessage
+                    return SystemMessage(**kwargs)
+                elif msg_type == "remove":
+                    from langchain_core.messages import RemoveMessage
+                    # model_dump() sets the id at the top level, not inside kwargs
+                    msg_id = d.get("id")
+                    return RemoveMessage(id=msg_id)
+            except Exception as exc:
+                logger.warning(
+                    "[Persistence] Failed to reconstruct %s from dict %r: %s",
+                    msg_type, d, exc,
+                )
+
+    return d
+
+def _json_loads(s: str | bytes | bytearray) -> Any:
+    """Deserialise a JSON string, reconstructing LangChain BaseMessage objects.
+
+    Restrict callers to graph state snapshots only (``_load_from_sqlite``,
+    ``get_final_state``, ``get_latest_delta``).  All other retrieval paths
+    must use plain ``json.loads`` to prevent false-positive coercion of API
+    request bodies, audit reports, events, and HITL payloads into message
+    objects.
+    """
+    return json.loads(s, object_hook=_json_object_hook)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -330,7 +421,10 @@ class _SqliteWriteBatcher:
                 conn.execute("ROLLBACK")
             except Exception:  # noqa: BLE001
                 pass
-            logger.error("[SQLiteBatcher] Write error: %s", exc, exc_info=True)
+            try:
+                logger.error("[SQLiteBatcher] Write error: %s", exc, exc_info=True)
+            except ValueError:
+                pass
             # Reset the connection on error — it may be in a bad state
             try:
                 self._conn.close()
@@ -463,7 +557,7 @@ class AuditStore:
 
         with self._lock:
             for sid, status, state_json, created_at in rows:
-                state = json.loads(state_json) if state_json else {}
+                state = _json_loads(state_json) if state_json else {}
                 self._local[sid] = {
                     "running":      state.get("running", False),
                     "events":       state.get("events", []),
@@ -605,7 +699,7 @@ class AuditStore:
     def get_final_state(self, sid: str) -> dict | None:
         if self._redis:
             raw = self._redis.hget(self._k(sid, "meta"), "final_state")
-            return json.loads(raw) if raw else None
+            return _json_loads(raw) if raw else None  # graph state snapshot — hook required
         with self._lock:
             return self._local.get(sid, {}).get("final_state")
 
@@ -663,7 +757,7 @@ class AuditStore:
     def get_report(self, sid: str) -> dict | None:
         if self._redis:
             raw = self._redis.hget(self._k(sid, "meta"), "report")
-            return json.loads(raw) if raw else None
+            return json.loads(raw) if raw else None  # audit report — plain dict, no hook
         with self._lock:
             return self._local.get(sid, {}).get("report")
 
@@ -680,7 +774,7 @@ class AuditStore:
     def get_request(self, sid: str) -> dict | None:
         if self._redis:
             raw = self._redis.hget(self._k(sid, "meta"), "request")
-            return json.loads(raw) if raw else None
+            return json.loads(raw) if raw else None  # API request body — plain dict, no hook
         with self._lock:
             return self._local.get(sid, {}).get("request")
 
@@ -713,7 +807,7 @@ class AuditStore:
     def get_latest_delta(self, sid: str) -> dict | None:
         if self._redis:
             raw = self._redis.hget(self._k(sid, "meta"), "latest_delta")
-            return json.loads(raw) if raw else None
+            return _json_loads(raw) if raw else None  # graph state delta — hook required
         with self._lock:
             return self._local.get(sid, {}).get("latest_delta")
 
@@ -732,7 +826,7 @@ class AuditStore:
     def get_hitl(self, sid: str) -> dict | None:
         if self._redis:
             raw = self._redis.get(self._k(sid, "hitl"))
-            return json.loads(raw) if raw else None
+            return json.loads(raw) if raw else None  # HITL context dict — plain dict, no hook
         with self._lock:
             return self._local.get(sid, {}).get("hitl")
 
@@ -768,7 +862,7 @@ class AuditStore:
             result = self._redis.blpop(self._k(sid, "hitl_dec"), timeout=timeout)
             if result:
                 _, raw = result
-                return json.loads(raw)
+                return json.loads(raw)  # HITL decision payload — plain dict, no hook
             return None
         else:
             with self._lock:

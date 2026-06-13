@@ -30,6 +30,10 @@ def test_analyst_decision_validates_route():
     # valid
     dec = AnalystDecision(route_decision="attack_swarm", cooperation_score=0.5)
     assert dec.route_decision == "attack_swarm"
+
+    # runtime route labels emitted elsewhere in the graph
+    assert AnalystDecision(route_decision="reporter", cooperation_score=0.5).route_decision == "reporter"
+    assert AnalystDecision(route_decision="analyst_bypass", cooperation_score=0.5).route_decision == "analyst_bypass"
     
     # invalid cooperation score
     with pytest.raises(ValidationError):

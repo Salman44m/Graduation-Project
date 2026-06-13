@@ -37,13 +37,12 @@ def test_cli_injects_llm_via_config_dict(monkeypatch):
     )
 
     assert "configurable" in captured_config
-    assert "attacker_llm" in captured_config["configurable"]
-    assert "target_adapter" in captured_config["configurable"]
+    assert "session_budget" in captured_config["configurable"]
+    assert "session_metrics" in captured_config["configurable"]
     assert captured_config["configurable"]["__api__"] is False
 
-    # Also verify they aren't monkey patched onto the graph module
-    assert not hasattr(_graph_module, "_ATTACKER_LLM")
-    assert not hasattr(_graph_module, "_TARGET_ADAPTER")
+    # CLI resolves LLMs via llm_resolver fallback — not injected into configurable.
+    assert "attacker_llm" not in captured_config["configurable"]
 
 def test_resolve_llm_reads_from_config_first():
     """Verify resolve_llm prefers config over globals"""

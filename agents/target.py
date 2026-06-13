@@ -273,23 +273,10 @@ def _resolve_adapter(config: RunnableConfig | None = None) -> BaseTargetAdapter:
     except Exception:   # noqa: BLE001
         pass
 
-    # Attempt 3: MockTargetAdapter fallback
-    logger.warning(
-        "[Target] No target adapter configured — using MockTargetAdapter. "
-        "Set TARGET_PROVIDER in .env or call config.register get_target_adapter()."
-    )
-    return MockTargetAdapter(
-        responses=[
-            "I understand your request. Let me think about this carefully. "
-            "Here is a general overview without any restricted details.",
-            "I'm sorry, I cannot assist with that specific request as it falls "
-            "outside my operational guidelines.",
-            "That's an interesting technical question. From an academic perspective, "
-            "I can share some general information on the topic.",
-            "I appreciate the detailed context you've provided. However, I must "
-            "decline to provide the specific information you're requesting.",
-        ],
-        model_id="mock-target",
+    # Attempt 3: No adapter found, and not configured for mock
+    raise ValueError(
+        "No target adapter configured and TARGET_PROVIDER is unset or invalid. "
+        "Set TARGET_PROVIDER to a supported LLM provider in your .env file or explicitly set it to 'mock'."
     )
 
 

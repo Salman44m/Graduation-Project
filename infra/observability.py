@@ -82,6 +82,8 @@ _ctx_turn_count:    ContextVar[int]   = ContextVar("turn_count",    default=0)
 _ctx_session_start: ContextVar[float] = ContextVar("session_start", default=0.0)
 _ctx_target_model:  ContextVar[str]   = ContextVar("target_model",  default="")
 
+_ctx_session_metrics: ContextVar[Any] = ContextVar("session_metrics", default=None)
+
 # Thread-local fallback for background threads that can't use ContextVar
 _thread_local = threading.local()
 
@@ -91,6 +93,7 @@ def set_session_context(
     node_name:    str   = "",
     turn_count:   int   = 0,
     target_model: str   = "",
+    session_metrics: Any = None,
 ) -> None:
     """Set the logging context for the current async task or thread.
 
@@ -102,12 +105,16 @@ def set_session_context(
     _ctx_turn_count.set(turn_count)
     _ctx_target_model.set(target_model)
     _ctx_session_start.set(time.monotonic())
+    if session_metrics is not None:
+        _ctx_session_metrics.set(session_metrics)
     # Also set thread-local for background threads
     _thread_local.session_id    = session_id
     _thread_local.node_name     = node_name
     _thread_local.turn_count    = turn_count
     _thread_local.target_model  = target_model
     _thread_local.session_start = time.monotonic()
+    if session_metrics is not None:
+        _thread_local.session_metrics = session_metrics
 
 
 def set_node_context(node_name: str, turn_count: int = 0) -> None:
@@ -125,8 +132,31 @@ def clear_session_context() -> None:
     _ctx_turn_count.set(0)
     _ctx_target_model.set("")
     _ctx_session_start.set(0.0)
-    for attr in ("session_id", "node_name", "turn_count", "target_model", "session_start"):
+    _ctx_session_metrics.set(None)
+    for attr in ("session_id", "node_name", "turn_count", "target_model", "session_start", "session_metrics"):
         setattr(_thread_local, attr, None)
+
+
+def get_session_metrics() -> Any:
+    """Return the active SessionMetrics instance, or None."""
+    try:
+        val = _ctx_session_metrics.get()
+        if val is not None:
+            return val
+        return getattr(_thread_local, "session_metrics", None)
+    except Exception:
+        return None
+
+
+def bind_session_metrics(session_metrics: Any) -> None:
+    """Attach SessionMetrics to the current logging context (routers + nodes)."""
+    try:
+        _ctx_session_metrics.set(session_metrics)
+        _thread_local.session_metrics = session_metrics
+    except Exception:
+        logging.getLogger("promptevo.observability").debug(
+            "bind_session_metrics failed", exc_info=True,
+        )
 
 
 def _get_ctx(var: ContextVar, tl_attr: str, default: Any) -> Any:
@@ -340,11 +370,55 @@ def logged_node(node_name: str):
 # HEALTH / READINESS PROBE DATA
 # ─────────────────────────────────────────────────────────────────────────────
 
+def emit_session_complete(
+    *,
+    session_id: str = "",
+    attack_status: str = "",
+    turn_count: int = 0,
+    budget_summary: dict | None = None,
+    metrics_summary: dict | None = None,
+    extra: dict | None = None,
+) -> None:
+    """Fail-open session_complete structured log."""
+    try:
+        log = logging.getLogger("promptevo.session")
+        payload: dict[str, Any] = {
+            "event":         "session_complete",
+            "session_id":    session_id,
+            "attack_status": attack_status,
+            "turn_count":    turn_count,
+        }
+        if budget_summary is not None:
+            payload["budget"] = budget_summary
+        if metrics_summary is not None:
+            payload["metrics"] = metrics_summary
+        if extra:
+            payload.update(extra)
+        log.info("session_complete", extra=payload)
+    except Exception:
+        logging.getLogger("promptevo.observability").debug(
+            "session_complete logging failed", exc_info=True,
+        )
+
+
 def get_observability_status() -> dict:
     """Return observability configuration for the /health endpoint."""
-    return {
-        "json_logging":        True,
-        "json_logger_lib":     _HAS_JSON_LOGGER,
-        "log_level":           os.getenv("LOG_LEVEL", "WARNING"),
-        "context_propagation": "contextvars + thread_local",
-    }
+    try:
+        from core.constants import ROUTING_HISTORY_MAXLEN
+        return {
+            "json_logging":            True,
+            "json_logger_lib":         _HAS_JSON_LOGGER,
+            "log_level":               os.getenv("LOG_LEVEL", "WARNING"),
+            "context_propagation":     "contextvars + thread_local",
+            "node_logging_enabled":    True,
+            "session_metrics_enabled": True,
+            "routing_history_maxlen":  ROUTING_HISTORY_MAXLEN,
+            "strict_state_validation": os.getenv("PROMPTEVO_STRICT_STATE", "").strip() == "1",
+        }
+    except Exception:
+        return {
+            "json_logging":        True,
+            "json_logger_lib":     _HAS_JSON_LOGGER,
+            "log_level":           os.getenv("LOG_LEVEL", "WARNING"),
+            "context_propagation": "contextvars + thread_local",
+        }

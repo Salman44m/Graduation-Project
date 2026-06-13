@@ -1,0 +1,20 @@
+# DefenseMechanism taxonomy for Threat Memory Graph
+mechanisms:
+  constitutional_ai:
+    label: Constitutional AI
+    signals: ["values", "ethical", "alignment", "responsible ai"]
+  policy_filter:
+    label: Policy Filter
+    signals: ["policy", "terms of service", "guidelines", "prohibited"]
+  context_guard:
+    label: Context Guard
+    signals: ["context", "off-topic", "outside the scope"]
+  semantic_filter:
+    label: Semantic Filter
+    signals: ["inappropriate", "unsafe", "keyword"]
+  rlhf_refusal:
+    label: RLHF Refusal
+    signals: ["cannot help", "unable to assist"]
+  tool_policy:
+    label: Tool Policy
+    signals: ["tool", "function call", "action not permitted"]

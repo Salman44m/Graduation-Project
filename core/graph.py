@@ -81,15 +81,11 @@ Fully implemented (imported from their modules):
 
 Routing Function Inventory
 ──────────────────────────
-  • route_after_scout          — always advance to analyst
-  • route_from_analyst         — 3-way: scout / decomposer / attack_swarm
-  • route_after_attack_swarm   — always advance to target
-  • route_decomposition_loop   — loop target→target OR exit to combiner
-  • route_from_combiner        — always advance to judge
-  • route_from_judge           — 2-way: experience_pool(fail) / remediation(success)
-  • route_after_pool_on_fail   — always loop back to analyst
-  • route_after_remediation    — always advance to experience_pool(success log)
-  • route_after_pool_on_success — always advance to reporter
+  • route_after_scout          — target / analyst / intel_updater
+  • route_from_analyst         — scout / decomposer / attack_swarm / gci / rmce / intel_updater
+  • route_after_attack_swarm   — HITL, parallel Send(), or target fallback
+  • route_after_target_*       — decomposition / warmup / attack sub-routers
+  • route_from_judge           — remediation / experience_pool / intel_updater
 
 References
 ──────────
@@ -105,7 +101,9 @@ from __future__ import annotations
 import logging
 import os
 import json
-from typing import Any
+import hashlib
+import time
+from typing import Any, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import HumanMessage as _HM, AIMessage as _AM
 
@@ -136,6 +134,8 @@ from evaluators.rahs_scorer import rahs_scorer_node
 
 from evaluators.response_classifier import response_classifier_node
 from memory.experience_pool import reflective_experience_pool_node
+from memory.threat_intel import retrieve_target_intel, store_target_intel
+from hitl.hitl_handler import build_hitl_context, extract_pending_payload
 
 # ─── Fully-implemented remediation ───────────────────────────────────────────
 from remediation.patch_generator import patch_generator_node
@@ -151,6 +151,12 @@ logger = logging.getLogger(__name__)
 COOP_SCOUT_THRESHOLD: float = THRESHOLD.coop_scout
 JUDGE_SUCCESS_THRESHOLD: float = THRESHOLD.judge_success
 MAX_SESSION_TURNS: int = BUDGET.max_session_turns
+
+# ── Actor-Critic grooming phase constants ───────────────────────────────
+MAX_GROOMING_TURNS: int     = BUDGET.max_grooming_turns
+"""Hard ceiling on grooming iterations before forced attack transition (5)."""
+GROOMING_READY_THRESHOLD: float = THRESHOLD.grooming_ready
+"""cooperation_score at or above which grooming exits early (0.70)."""
 MAX_SCOUT_REVISITS: int = BUDGET.max_scout_revisits
 MAX_RMCE_META_LEVEL: int = BUDGET.max_rmce_meta_level
 
@@ -302,8 +308,17 @@ def _judge_and_score_node(state: AuditorState, config: RunnableConfig) -> dict[s
     else:
         # partial_comply AND full_comply → full RedDebate + Prometheus pipeline.
         # Prometheus determines the actual score after verifying objective relevance.
-        logger.info("[Judge] response_class=%s → running full RedDebate pipeline", response_class)
-        judge_delta = prometheus_judge_node(state, config=config)
+        logger.info("[Judge] response_class=%s → running full judge pipeline", response_class)
+        try:
+            from config import settings
+            if settings.enable_judge_ensemble:
+                from evaluators.judge_ensemble import judge_ensemble_node
+                judge_delta = judge_ensemble_node(state, config=config)
+            else:
+                judge_delta = prometheus_judge_node(state, config=config)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Judge] Ensemble unavailable, falling back to Prometheus: %s", exc)
+            judge_delta = prometheus_judge_node(state, config=config)
 
     # ── Evidence Grounding Validator (EGV) ────────────────────────────────
     # Fires ONLY when prometheus_score >= 4.0.  A targeted LLM call using the
@@ -520,6 +535,45 @@ def branch_eval_node(state: AuditorState, config: RunnableConfig) -> dict[str, A
     return {"branch_results": [result]}
 
 
+def _merge_target_defense_profiles(
+    base_profile: dict[str, Any],
+    results: list[dict[str, Any]],
+    best_result: dict[str, Any],
+) -> dict[str, Any]:
+    """Manually merge target_defense_profile from parallel branch evaluations."""
+    merged = dict(base_profile)
+    
+    for r in results:
+        branch_profile = r.get("state_delta", {}).get("target_defense_profile")
+        if not branch_profile:
+            continue
+            
+        for k, v in branch_profile.items():
+            if isinstance(v, list):
+                # Deduplicate and union preserving insertion order
+                merged[k] = list(dict.fromkeys(merged.get(k, []) + v))
+            elif isinstance(v, int) and k in ("refusal_count", "comply_count"):
+                # Safe delta extraction
+                delta = v - base_profile.get(k, 0)
+                if delta < 0:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(
+                        "[BranchMerge] Negative delta (%d) detected for %s in branch %s. "
+                        "Ignoring to prevent decrementing historical counts.",
+                        delta, k, r.get("branch_id", "unknown")
+                    )
+                elif delta > 0:
+                    merged[k] = merged.get(k, 0) + delta
+
+    # Last-observation strings follow the winning branch
+    best_profile = best_result.get("state_delta", {}).get("target_defense_profile", {})
+    if "last_response_class" in best_profile:
+        merged["last_response_class"] = best_profile["last_response_class"]
+
+    return merged
+
+
 def branch_merge_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
     """Fan-in node: collect all ``BranchResult`` entries and pick the winner.
 
@@ -577,6 +631,13 @@ def branch_merge_node(state: AuditorState, config: RunnableConfig) -> dict[str, 
 
     # ── Build final state delta ─────────────────────────────────────────────────
     final_delta: dict[str, Any] = dict(best["state_delta"])
+    
+    # Safely merge parallel observations from target_defense_profile
+    base_profile = dict(state.get("target_defense_profile") or {})
+    final_delta["target_defense_profile"] = _merge_target_defense_profiles(
+        base_profile, results, best
+    )
+    
     final_delta["candidate_branches"]   = branches     # updated scores/metadata
     final_delta["branch_results"]       = []           # reset for next turn
     final_delta["_seq_branch_evaluated"] = True
@@ -625,6 +686,103 @@ _GCI          = "gci"                   # Gradient Conflict Induction
 _RMCE         = "rmce"                  # Recursive Meta-Cognitive Entrapment
 _REMEDIATION  = "self_play_remediation"
 _REPORTER     = "reporter"
+_INTEL_RETRIEVER = "intel_retriever"    # Pre-session: retrieve cross-session threat intel
+_INTEL_UPDATER   = "intel_updater"      # Post-session: persist new vulnerability profile
+
+
+_INTEL_RETRIEVER = "intel_retriever"    # Pre-session: retrieve cross-session threat intel
+_INTEL_UPDATER   = "intel_updater"      # Post-session: persist new vulnerability profile
+
+# Phase 0 baseline topology — canonical spec for regression hash (matches build_graph)
+_GRAPH_USER_NODES: tuple[str, ...] = (
+    _INTEL_RETRIEVER, _SCOUT, _ANALYST, _ATTACK_SWARM, _BRANCH_EVAL, _BRANCH_MERGE,
+    _DECOMPOSER, _TARGET, _HITL, _COMBINER, _CLASSIFIER, _JUDGE, _SELF_REFEREE,
+    _GCI, _RMCE, _POOL, _REMEDIATION, _INTEL_UPDATER, _REPORTER,
+)
+
+_GRAPH_UNCONDITIONAL_EDGES: tuple[tuple[str, str], ...] = (
+    (_INTEL_RETRIEVER, _SCOUT),
+    (_INTEL_UPDATER, _REPORTER),
+    (_COMBINER, _JUDGE),
+    (_REPORTER, "__end__"),
+    (_BRANCH_EVAL, _BRANCH_MERGE),
+    (_HITL, _TARGET),
+    (_SELF_REFEREE, _ANALYST),
+)
+
+_GRAPH_CONDITIONAL_ROUTES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (_SCOUT, "route_after_scout", (_TARGET, _ANALYST, _INTEL_UPDATER)),
+    (_ANALYST, "route_from_analyst", (_SCOUT, _DECOMPOSER, _ATTACK_SWARM, _GCI, _RMCE, _INTEL_UPDATER)),
+    (_ATTACK_SWARM, "route_after_attack_swarm", (_TARGET, _HITL)),
+    (_BRANCH_MERGE, "route_after_branch_merge", (_REMEDIATION, _POOL, _ANALYST)),
+    (_GCI, "route_after_gci", (_TARGET, _HITL)),
+    (_RMCE, "route_after_rmce", (_TARGET, _HITL, _GCI, _ATTACK_SWARM, _CLASSIFIER)),
+    (_DECOMPOSER, "<lambda>", (_TARGET,)),
+    (_TARGET, "route_after_target", (_TARGET, _COMBINER, _JUDGE, _CLASSIFIER, _ANALYST, _SELF_REFEREE, _RMCE, _INTEL_UPDATER, _REMEDIATION)),
+    (_CLASSIFIER, "route_after_classifier", (_JUDGE,)),
+    (_JUDGE, "route_from_judge", (_POOL, _REMEDIATION, _INTEL_UPDATER)),
+    (_POOL, "_route_pool_combined", (_ANALYST, _INTEL_UPDATER)),
+    (_REMEDIATION, "route_after_remediation", (_POOL,)),
+)
+
+_ROUTING_LOGGER = logging.getLogger("promptevo.routing")
+
+
+def _format_route_dest(result: Any) -> str:
+    """Serialize a routing return value for logging."""
+    if isinstance(result, list):
+        parts: list[str] = []
+        for item in result:
+            node = getattr(item, "node", None)
+            parts.append(str(node) if node else "Send")
+        return f"Send[{','.join(parts)}]" if parts else "Send[]"
+    return str(result)
+
+
+def _log_routing_decision(
+    from_node: str,
+    result: Any,
+    state: AuditorState,
+    reason: str = "",
+) -> None:
+    """Fail-open structured routing log + SessionMetrics append."""
+    try:
+        dest = _format_route_dest(result)
+        _ROUTING_LOGGER.debug(
+            "routing_decision",
+            extra={
+                "event":     "routing_decision",
+                "from_node": from_node,
+                "to_node":   dest,
+                "reason":    reason,
+                "turn":      state.get("turn_count", 0) if isinstance(state, dict) else 0,
+            },
+        )
+        from infra.observability import get_session_metrics
+        metrics = get_session_metrics()
+        if metrics is not None:
+            metrics.record_route(from_node, dest, reason=reason)
+    except Exception:
+        _ROUTING_LOGGER.debug("routing observability hook failed", exc_info=True)
+
+
+def _ret(from_node: str, result: Any, state: AuditorState, reason: str = "") -> Any:
+    """Log routing decision (fail-open) and return *result* unchanged."""
+    _log_routing_decision(from_node, result, state, reason)
+    return result
+
+
+def _metrics_from_config(config: RunnableConfig | dict[str, Any] | None) -> Any:
+    try:
+        from infra.observability import get_session_metrics
+        metrics = get_session_metrics()
+        if metrics is not None:
+            return metrics
+        if config and isinstance(config, dict):
+            return config.get("configurable", {}).get("session_metrics")
+    except Exception:
+        pass
+    return None
 
 
 import inspect
@@ -633,27 +791,71 @@ def safe_node(node_func):
     """Wraps a node to catch unhandled exceptions and safely trigger the graph's circuit breaker."""
     sig = inspect.signature(node_func)
     accepts_config = "config" in sig.parameters
+    node_name = node_func.__name__
 
-    def wrapper(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
+    def wrapper(state: AuditorState, config: Optional[RunnableConfig] = None) -> dict[str, Any]:
+        t_start = time.monotonic()
+        try:
+            from infra.observability import set_node_context
+            turn = state.get("turn_count", 0) if isinstance(state, dict) else 0
+            set_node_context(node_name, turn)
+            logger.debug(
+                "node_enter",
+                extra={"event": "node_enter", "node": node_name, "turn": turn},
+            )
+        except Exception:
+            logger.debug("node_enter observability failed", exc_info=True)
+
         try:
             if accepts_config:
-                return node_func(state, config)
+                result = node_func(state, config)
             else:
-                return node_func(state)
+                result = node_func(state)
         except Exception as exc:
             if type(exc).__name__ == "GraphInterrupt":
                 raise
+            try:
+                metrics = _metrics_from_config(config)
+                if metrics is not None:
+                    metrics.record_exception(node_name)
+            except Exception:
+                logger.debug("exception metrics failed", exc_info=True)
             import traceback
             logger.error(
                 "[Failsafe] Node '%s' crashed with unhandled exception: %s\n%s",
                 node_func.__name__, exc, traceback.format_exc()
             )
-            # Route immediately to reporter via 'error' status
             return {
-                "attack_status": "error", 
-                "target_error": f"Node '{node_func.__name__}' crashed: {exc}"
+                "attack_status": "error",
+                "target_error": f"Node '{node_func.__name__}' crashed: {exc}",
             }
-    
+
+        try:
+            latency_ms = (time.monotonic() - t_start) * 1000
+            metrics = _metrics_from_config(config)
+            if metrics is not None:
+                metrics.record_node_execution(node_name, latency_ms=latency_ms)
+            if isinstance(result, dict):
+                from core.state import validate_state_update_safe
+                phantoms = validate_state_update_safe(result, node_name=node_name, strict=False)
+                if phantoms:
+                    logger.warning(
+                        "[StateValidation] Node '%s' wrote phantom keys: %s",
+                        node_name, phantoms,
+                    )
+            logger.debug(
+                "node_exit",
+                extra={
+                    "event":      "node_exit",
+                    "node":       node_name,
+                    "latency_ms": round(latency_ms, 2),
+                },
+            )
+        except Exception:
+            logger.debug("node_exit observability failed", exc_info=True)
+
+        return result
+
     wrapper.__name__ = node_func.__name__
     return wrapper
 
@@ -661,96 +863,37 @@ def route_after_scout(state: AuditorState) -> str:
     """After scout_node: advance to target, or trap escape hatches.
     """
     if state.get("attack_status") == "error":
-        return _REPORTER
+        return _ret(_SCOUT, _INTEL_UPDATER, state, "error")
 
     rd = state.get("route_decision", "")
     if rd == "reporter":
-        return _REPORTER
+        return _ret(_SCOUT, _INTEL_UPDATER, state, "route_decision=reporter")
     if rd == "analyst_bypass":
-        return _ANALYST
-    return _TARGET
+        return _ret(_SCOUT, _ANALYST, state, "analyst_bypass")
+    return _ret(_SCOUT, _TARGET, state, "default")
 
 
 def route_from_analyst(state: AuditorState) -> str:
     """3-way strategic router: the primary decision branch of the graph.
 
-    Priority order (highest → lowest):
-    ─────────────────────────────────
-    1. TERMINAL: session budget exhausted → reporter.
-    2. TERMINAL: attack already succeeded or failed → reporter.
-    3. SCOUT:    cooperation_score < COOP_SCOUT_THRESHOLD → scout warm-up.
-    4. DECOMPOSE: route_decision == "decomposer" (Analyst escalated) → decomposer.
-    5. ATTACK:   default standard TAP attack → attack_swarm.
-
-    The ``route_decision`` field was written by ``analyst_node`` using the same
-    logic as this function.  We honour it directly to avoid duplicating the
-    decision logic, but we add budget/terminal guards here as a safety net.
-
-    Returns
-    ───────
-    str
-        One of: "scout", "decomposer", "attack_swarm", "reporter"
+    Only consumes route_decision from arbitrator, removing parallel routing authority.
     """
-    turn_count    = state.get("turn_count", 0)
-    attack_status = state.get("attack_status", "in_progress")
-    coop          = state.get("cooperation_score", 0.0)
-    route         = state.get("route_decision", "attack_swarm")
+    route = state.get("route_decision")
+    if not route or route == "scout":
+        from intelligence.arbitrator import arbitrate_route
+        route = arbitrate_route(state)["route_decision"]
 
-    # -- FAILSAFE CIRCUIT BREAKER (50-turn hard ceiling) ----------------------
-    # This is the absolute last line of defence against infinite loops.
-    # If execution reaches this point with turn_count >= MAX_SESSION_TURNS,
-    # the session is immediately routed to the reporter regardless of status.
-    if turn_count >= MAX_SESSION_TURNS:
-        logger.warning(
-            "[Router] CIRCUIT BREAKER: turn=%d >= MAX=%d -- hard-routing to reporter",
-            turn_count, MAX_SESSION_TURNS,
-        )
-        return _REPORTER
-
-    if attack_status in ("success", "failure", "exhausted", "error"):
-        logger.info("[Router] attack_status=%s -> reporter", attack_status)
-        return _REPORTER
-
-    # -- Explicit analyst route decisions — HIGHEST PRIORITY --------------
-    # These MUST be evaluated before the coop-score fallback so that
-    # deliberate analyst commands (resurrect, decomposer, gci, rmce, scout)
-    # are never intercepted by the generic "cold target" guard.
-    # FIX 1: Previously, coop < 0.60 sat above this block, causing any
-    # low-coop explicit decision (e.g. "resurrect" after a hard_refusal)
-    # to be overridden and rerouted to scout -- creating an infinite loop.
-    if route == "terminal":
-        logger.info("[Router] Explicit terminal decision -> reporter")
-        return _REPORTER
-    if route == "resurrect":
-        logger.warning("[Router] RESURRECTION -- routing to attack_swarm for fresh beam generation")
-        return _ATTACK_SWARM
-    if route == "decomposer":
-        logger.info("[Router] Analyst escalated to decomposition -> decomposer")
-        return _DECOMPOSER
-    if route == "gci":
-        logger.info("[Router] Analyst selected GCI attack vector")
-        return _GCI
-    if route == "rmce":
-        logger.info("[Router] Analyst selected RMCE attack vector")
-        return _RMCE
-    if route == "scout":
-        logger.info("[Router] Analyst explicitly requested scout")
-        return _SCOUT
-
-    # -- Guard 2: cold target warm-up (Turn 0 ONLY) -----------------------
-    # FIX: coop < threshold must ONLY redirect to scout during the initial
-    # warm-up phase (turn_count == 0). Once the attack is underway, low
-    # cooperation is expected resistance -- routing to scout creates an
-    # Analyst->Scout->Analyst infinite loop because scout never raises coop
-    # above the threshold against a resistant target, and RedDebate mutations
-    # are never delivered to the target.
-    if coop < COOP_SCOUT_THRESHOLD and state.get("turn_count", 0) == 0:
-        logger.info("[Router] coop=%.3f < %.2f at turn 0 (warm-up) -> scout", coop, COOP_SCOUT_THRESHOLD)
-        return _SCOUT
-
-    # Default: standard TAP attack
-    logger.info("[Router] Standard attack route -> attack_swarm")
-    return _ATTACK_SWARM
+    _route_map = {
+        "scout":        _SCOUT,
+        "decomposer":   _DECOMPOSER,
+        "attack_swarm": _ATTACK_SWARM,
+        "gci":          _GCI,
+        "rmce":         _RMCE,
+        "terminal":     _INTEL_UPDATER,
+        "resurrect":    _ATTACK_SWARM,
+    }
+    destination = _route_map.get(route, _ATTACK_SWARM)
+    return _ret(_ANALYST, destination, state, f"arbitrated:{route}")
 
 
 
@@ -765,102 +908,133 @@ Set ``HITL_ENABLED=true`` in ``.env`` to activate.  Defaults to False so all
 existing automated tests and CI pipelines continue to run without interruption.
 """
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI MODE FLAG
+# Set to True by main.py at startup so that hitl_node auto-approves payloads
+# instead of calling interrupt() (which would hang the CLI indefinitely).
+# The dashboard (dashboard.py / api.py) never sets this flag, so it retains
+# full HITL pause-and-resume behaviour.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CLI_MODE: bool = False
+"""True when the graph is being driven by the command-line entry point (main.py).
+
+Call ``core.graph.set_cli_mode(True)`` from main.py before invoking the graph
+to suppress the ``interrupt()`` call inside ``hitl_node`` and prevent the CLI
+session from hanging indefinitely while waiting for dashboard input.
+"""
+
+
+def set_cli_mode(enabled: bool = True) -> None:
+    """Activate or deactivate CLI mode for the HITL node.
+
+    Call this from ``main.py`` **before** invoking ``get_app().stream(...)``::
+
+        import core.graph
+        core.graph.set_cli_mode(True)
+
+    When ``enabled=True``:
+      - ``hitl_node`` auto-approves every payload without calling ``interrupt()``.
+      - The graph runs uninterrupted as a fully automated CLI session.
+      - Dashboard functionality is unaffected (dashboard.py never calls this).
+
+    When ``enabled=False`` (default):
+      - Normal HITL behaviour — graph pauses, dashboard resumes via Command(resume=...).
+    """
+    global _CLI_MODE
+    _CLI_MODE = enabled
+    logger.info("[HITL] CLI mode %s", "ENABLED (auto-approve)" if enabled else "disabled")
+
 
 def hitl_node(state: AuditorState) -> dict[str, Any]:
-    """Human-in-the-Loop breakpoint — pauses the graph for payload review.
+    """LangGraph node: Human-in-the-Loop breakpoint."""
+    from langchain_core.messages import HumanMessage as _HM, RemoveMessage
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    messages = list(state.get("messages", []))
+    branches = state.get("candidate_branches", [])
+    
+    # Extract the staged payload from the live runtime state.
+    pending_payload, _payload_source = extract_pending_payload(state)
 
-    Mechanism
-    ──────────
-    1. Extracts the staged adversarial payload from the last ``HumanMessage``
-       (placed there by ``attack_swarm_node``).
-    2. Writes it to ``pending_payload`` and sets ``hitl_status = "awaiting_human"``.
-    3. Calls ``interrupt({payload, technique, turn})`` — this terminates the
-       current ``.stream()`` call and persists state in the ``MemorySaver``
-       checkpointer.  The dashboard sees a ``{"__interrupt__": [...]}`` event.
-    4. When the auditor acts, the dashboard calls
-       ``.stream(Command(resume=decision), config=config)`` which resumes here.
-       ``interrupt()`` returns the ``decision`` dict.
-    5. If the auditor edited the payload, the last ``HumanMessage`` in
-       ``messages`` is replaced before execution continues to ``target_node``.
+    if _CLI_MODE:
+        if branches:
+            best = max(
+                (b for b in branches if isinstance(b, dict) and not b.get("is_pruned", False)),
+                key=lambda b: b.get("prometheus_score", 0.0),
+                default=branches[-1],
+            )
+            new_payload = (
+                best.get("prompt_variant")
+                or best.get("payload_delivered")
+                or best.get("payload_cleartext")
+                or pending_payload
+            )
+        else:
+            new_payload = pending_payload
 
-    Parameters
-    ──────────
-    state : AuditorState
-        Full shared graph state post attack_swarm_node.
-
-    Returns
-    ───────
-    dict[str, Any]
-        State delta: ``hitl_status``, ``pending_payload``, ``messages``.
-    """
-    messages  = list(state.get("messages", []))
-    technique = state.get("active_persuasion_technique", "")
-    turn      = state.get("turn_count", 0)
-
-    # Extract staged payload — last HumanMessage from attack_swarm_node
-    pending: str = ""
-    for msg in reversed(messages):
-        if getattr(msg, "type", "") in ("human", "user"):
-            pending = msg.content if isinstance(msg.content, str) else str(msg.content)
-            break
-
-    logger.info(
-        "=== hitl_node  [turn=%d  technique=%s  payload=%d chars] ===",
-        turn, technique, len(pending),
-    )
+        logger.info("[HITL] CLI mode active — auto-approving payload (%d chars)", len(new_payload))
+        
+        remove_msgs = []
+        for msg in reversed(messages):
+            if getattr(msg, "type", "") in ("human", "user"):
+                if getattr(msg, "id", None):
+                    remove_msgs.append(RemoveMessage(id=msg.id))
+                break
+                
+        return {
+            "hitl_status": "cli_auto_approved",
+            "messages": remove_msgs + [_HM(content=new_payload)],
+        }
 
     # ── PAUSE: yield to human auditor ─────────────────────────────────────
-    decision: dict[str, Any] = interrupt({
-        "status": "awaiting_hitl",
-        "pending_payload": state.get("pending_payload", ""),
-        "candidate_branches": state.get("candidate_branches", []),
-        "turn_count": state.get("turn_count", 0),
-        "preview": {
-            "off_topic_scores": [
-                b.get("off_topic_similarity", 0.0) if isinstance(b, dict) else 0.0
-                for b in state.get("candidate_branches", [])
-            ],
-            "active_pap_technique": state.get("active_persuasion_technique", ""),
-            "available_pap_techniques": [
-                "Logical Appeal",
-                "Authority Endorsement", 
-                "Evidence-Based Persuasion",
-                "Emotional Appeal",
-                "Reciprocity",
-                "Social Proof",
-                "Urgency",
-                "Misrepresentation",
-                "Roleplay Framing",
-                "Expert Persona",
-            ],
-            "current_rahs": state.get("rahs_score", 0.0),
-            "depth": state.get("current_depth", 0),
-        }
-    })
+    decision: dict[str, Any] = interrupt(build_hitl_context({
+        **state,
+        "pending_payload": pending_payload,
+        "hitl_status": "awaiting_hitl",
+    }))
+
     # ── RESUME: apply auditor decision ────────────────────────────────────
+    from hitl.hitl_handler import HITLHandler
+    try:
+        action_obj = HITLHandler.normalize_action(decision)
+        handler = HITLHandler()
+        state_delta = handler.process(action_obj, state)
+    except Exception as exc:
+        logger.error("[HITL] Failed to process resume decision: %s", exc)
+        state_delta = {}
 
-    # The decision dict comes from api.py passing the HITLHandler state delta directly.
-    # Or, the action itself is returned if no state changes.
-    hitl_status_val = "human_processed"
-    
-    if "pending_payload" in decision and decision["pending_payload"].strip() != pending.strip():
-        from langchain_core.messages import HumanMessage as _HM
-        new_payload = decision["pending_payload"]
-        for i in range(len(messages) - 1, -1, -1):
-            if getattr(messages[i], "type", "") in ("human", "user"):
-                messages[i] = _HM(content=new_payload)
-                break
-        logger.info(
-            "[HITL] Payload edited: %d → %d chars", len(pending), len(new_payload)
-        )
+    final_payload = state_delta.get("pending_payload", pending_payload) or pending_payload
+
+    # Update branches if payload was changed so scoring matches what was delivered
+    if final_payload.strip() != pending_payload.strip() and branches:
+        branches[0]["payload_delivered"] = final_payload
+        branches[0]["prompt_variant"] = final_payload
+        branches[0]["payload_cleartext"] = final_payload
+        logger.info("[HITL] Payload updated to user-supplied text (%d chars)", len(final_payload))
     else:
-        logger.info("[HITL] Payload unchanged (%d chars)", len(pending))
+        logger.info("[HITL] Payload approved unchanged (%d chars)", len(final_payload))
 
-    return {
-        **decision,
-        "hitl_status":     hitl_status_val,
-        "messages":        messages,
+    # Identify the last human message (scout probe) to remove it
+    remove_msgs = []
+    for msg in reversed(messages):
+        if getattr(msg, "type", "") in ("human", "user"):
+            if getattr(msg, "id", None):
+                remove_msgs.append(RemoveMessage(id=msg.id))
+            break
+
+    # Build final delta returning the updated message and all keys from state_delta (e.g. route_decision)
+    ret_delta = {
+        "hitl_status": "human_processed",
+        "candidate_branches": branches,
+        "messages": remove_msgs + [_HM(content=final_payload)],
     }
+    for k, v in state_delta.items():
+        if k != "pending_payload":
+            ret_delta[k] = v
+            
+    return ret_delta
 
 
 def route_after_attack_swarm(
@@ -891,7 +1065,7 @@ def route_after_attack_swarm(
       This preserves the interactive single-branch review UX.
     """
     if HITL_ENABLED:
-        return _HITL
+        return _ret(_ATTACK_SWARM, _HITL, state, "hitl_enabled")
 
     attack_status  = state.get("attack_status", "in_progress")
     route_decision = state.get("route_decision", "")
@@ -904,7 +1078,7 @@ def route_after_attack_swarm(
             "[Router] Non-attack path (warmup=%s, decomp=%s) → raw target_node",
             is_warmup, is_decomposing,
         )
-        return _TARGET
+        return _ret(_ATTACK_SWARM, _TARGET, state, "warmup_or_decomp")
 
     # ── Identify live (unevaluated) branches ─────────────────────────────────
     # Zombie Branch guard: exclude branches already evaluated in a prior turn.
@@ -919,7 +1093,7 @@ def route_after_attack_swarm(
         logger.warning(
             "[Router] No unevaluated live branches found — falling back to raw target_node"
         )
-        return _TARGET
+        return _ret(_ATTACK_SWARM, _TARGET, state, "no_live_branches")
 
     # ── Build per-branch state snapshots for parallel Send() dispatch ────────
     from langchain_core.messages import HumanMessage
@@ -951,13 +1125,13 @@ def route_after_attack_swarm(
 
     if not sends:
         logger.warning("[Router] All branches had empty payloads — fallback to raw target_node")
-        return _TARGET
+        return _ret(_ATTACK_SWARM, _TARGET, state, "empty_payloads")
 
     logger.info(
         "[Router] Dispatching %d branch(es) in parallel via Send() → branch_eval_node",
         len(sends),
     )
-    return sends
+    return _ret(_ATTACK_SWARM, sends, state, "parallel_send")
 
 
 def route_after_gci(state: AuditorState) -> str:
@@ -968,8 +1142,8 @@ def route_after_gci(state: AuditorState) -> str:
     It simply passes through the HITL gate if enabled, otherwise goes to target.
     """
     if HITL_ENABLED:
-        return _HITL
-    return _TARGET
+        return _ret(_GCI, _HITL, state, "hitl_enabled")
+    return _ret(_GCI, _TARGET, state, "default")
 
 
 def route_after_branch_merge(state: AuditorState) -> str:
@@ -991,17 +1165,17 @@ def route_after_branch_merge(state: AuditorState) -> str:
 
     if attack_status == "success":
         logger.info("[Router] BranchMerge success → remediation")
-        return _REMEDIATION
+        return _ret(_BRANCH_MERGE, _REMEDIATION, state, "success")
 
     if attack_status in ("exhausted", "failure") or turn_count >= MAX_SESSION_TURNS:
         logger.warning(
             "[Router] BranchMerge terminal (status=%s, turn=%d) → pool → reporter",
             attack_status, turn_count,
         )
-        return _POOL
+        return _ret(_BRANCH_MERGE, _POOL, state, "terminal")
 
     logger.debug("[Router] BranchMerge no winner → analyst (turn=%d)", turn_count)
-    return _ANALYST
+    return _ret(_BRANCH_MERGE, _ANALYST, state, "in_progress")
 
 
 
@@ -1015,10 +1189,10 @@ def route_after_rmce(state: AuditorState) -> str:
     rd = state.get("route_decision", "")
     if rd == "gci":
         logger.info("[Router] RMCE failure recovery → GCI")
-        return _GCI
+        return _ret(_RMCE, _GCI, state, "recovery_gci")
     if rd == "attack_swarm":
         logger.info("[Router] RMCE failure recovery → attack_swarm")
-        return _ATTACK_SWARM
+        return _ret(_RMCE, _ATTACK_SWARM, state, "recovery_attack_swarm")
     # ISSUE-E FIX: detect refinement completion — rmce_node clears pending_payload
     # when it decides no further refinement is needed.  Skip target entirely and
     # go straight to classifier so the Turn 3 response gets evaluated.
@@ -1027,9 +1201,10 @@ def route_after_rmce(state: AuditorState) -> str:
         and not state.get("pending_payload", "")
     ):
         logger.info("[Router] RMCE refinement complete (no new payload) → classifier")
-        return _CLASSIFIER
+        return _ret(_RMCE, _CLASSIFIER, state, "refinement_complete")
     # Normal path: RMCE dispatched a new turn payload → HITL or target
-    return _HITL if HITL_ENABLED else _TARGET
+    dest = _HITL if HITL_ENABLED else _TARGET
+    return _ret(_RMCE, dest, state, "default")
 
 
 def route_after_classifier(state: AuditorState) -> str:
@@ -1044,11 +1219,11 @@ def route_after_classifier(state: AuditorState) -> str:
     verdict = state.get("response_class", "partial_comply")
     if verdict == "hard_refusal":
         logger.info("[Router] Fast classifier: hard_refusal → skip judge (save 6 LLM calls)")
-        return _JUDGE   # _judge_and_score_node will check response_class and short-circuit
+        return _ret(_CLASSIFIER, _JUDGE, state, "hard_refusal")
     if verdict == "full_comply":
         logger.info("[Router] Fast classifier: full_comply → skip judge (save 6 LLM calls)")
-        return _JUDGE   # same path; judge short-circuits to score=5.0
-    return _JUDGE        # partial_comply → full RedDebate path
+        return _ret(_CLASSIFIER, _JUDGE, state, "full_comply")
+    return _ret(_CLASSIFIER, _JUDGE, state, "partial_comply")
 
 
 def route_after_target_decomposition(state: AuditorState) -> str:
@@ -1058,7 +1233,7 @@ def route_after_target_decomposition(state: AuditorState) -> str:
     
     if not sub_questions:
         logger.warning("[Router] sub_questions empty during decomposition → analyst")
-        return _ANALYST
+        return _ret("target_decomposition", _ANALYST, state, "empty_sub_questions")
 
     answered_count = len(state.get("collected_sub_answers", []))
     total_q        = len(sub_questions)
@@ -1070,10 +1245,10 @@ def route_after_target_decomposition(state: AuditorState) -> str:
 
     if answered_count < total_q:
         logger.info("[Router] Decomposition loop: Q%d/%d → target", answered_count + 1, total_q)
-        return _TARGET
+        return _ret("target_decomposition", _TARGET, state, "more_questions")
 
     logger.info("[Router] Decomposition loop complete (%d/%d) → combiner", total_q, total_q)
-    return _COMBINER
+    return _ret("target_decomposition", _COMBINER, state, "complete")
 
 
 def route_after_target_warmup(state: AuditorState) -> str:
@@ -1081,9 +1256,9 @@ def route_after_target_warmup(state: AuditorState) -> str:
     depth = state.get("current_depth", 0)
     if depth == 0 and not state.get("self_referee_done", False):
         logger.info("[Router] First warm-up (depth=0) → self_referee")
-        return _SELF_REFEREE
+        return _ret("target_warmup", _SELF_REFEREE, state, "depth0")
     logger.info("[Router] Warm-up response received from target → analyst")
-    return _ANALYST
+    return _ret("target_warmup", _ANALYST, state, "warmup_done")
 
 
 def route_after_target_attack(state: AuditorState) -> str:
@@ -1092,7 +1267,7 @@ def route_after_target_attack(state: AuditorState) -> str:
     if 0 < rmce_ml < MAX_RMCE_META_LEVEL:
         if state.get("route_decision", "") == "rmce":
             logger.info("[Router] RMCE loop-back: rmce_meta_level=%d → rmce_node", rmce_ml)
-            return _RMCE
+            return _ret("target_attack", _RMCE, state, "rmce_loop")
     
     if rmce_ml >= MAX_RMCE_META_LEVEL:
         refine_cnt = state.get("rmce_refinement_count", 0)
@@ -1105,25 +1280,43 @@ def route_after_target_attack(state: AuditorState) -> str:
                 "[Router] RMCE Turn 3 response → refinement check (refine_cnt=%d/%d) → rmce_node",
                 refine_cnt, MAX_TURN3_REFINEMENTS,
             )
-            return _RMCE
+            return _ret("target_attack", _RMCE, state, "rmce_refinement")
         logger.info("[Router] RMCE complete → classifier → judge")
-        return _CLASSIFIER
+        return _ret("target_attack", _CLASSIFIER, state, "rmce_complete")
 
     logger.debug("[Router] Attack response received from target → classifier")
-    return _CLASSIFIER
+    return _ret("target_attack", _CLASSIFIER, state, "standard_attack")
 
 
 def route_after_target(state: AuditorState) -> str:
-    """Top-level dispatcher for routing after target_node execution."""
+    """Top-level dispatcher for routing after target_node execution.
+
+    Grooming phase check is evaluated FIRST.  When the multi-turn context
+    grooming loop is active, the target's response must always be sent to
+    ``analyst_node`` for Critic evaluation before any other routing logic.
+    """
+    # ── NEW: Grooming loop intercept — highest priority ────────────────────
+    # When the grooming phase is active, every target response must route to
+    # the analyst (Critic) for evaluation and directive generation.
+    # This takes priority over decomposition, warmup, and attack routing.
+    if state.get("grooming_phase_active", False):
+        logger.info(
+            "[Router] Grooming phase active (turn=%d/%d, coop=%.3f) → analyst (Critic)",
+            state.get("turn_count", 0),
+            MAX_GROOMING_TURNS,
+            state.get("cooperation_score", 0.0),
+        )
+        return _ret(_TARGET, _ANALYST, state, "grooming_active")
+
     status = state.get("attack_status", "in_progress")
 
     if status == "error":
-        logger.error("[Router] Target node set error status. Forcing reporter route.")
-        return _REPORTER
+        logger.error("[Router] Target node set error status. Forcing intel_updater route.")
+        return _ret(_TARGET, _INTEL_UPDATER, state, "error")
 
     if status == "success":
         logger.info("[Router] SeqBranch already confirmed success → remediation")
-        return _REMEDIATION
+        return _ret(_TARGET, _REMEDIATION, state, "success")
 
     if status == "decomposing":
         return route_after_target_decomposition(state)
@@ -1141,8 +1334,7 @@ def route_from_combiner(state: AuditorState) -> str:
     response.  This always needs to be scored by the judge swarm before
     any routing decision is made.
     """
-    return _JUDGE
-
+    return _ret(_COMBINER, _JUDGE, state, "always")
 
 
 def route_from_judge(state: AuditorState) -> str:
@@ -1153,32 +1345,32 @@ def route_from_judge(state: AuditorState) -> str:
 
     if attack_status == "success":
         logger.info("[Router] SUCCESS (score=%.1f) -> self_play_remediation", prometheus_score)
-        return _REMEDIATION
+        return _ret(_JUDGE, _REMEDIATION, state, "success")
 
     if attack_status == "exhausted":
         logger.warning("[Router] Budget exhausted at judge -> experience_pool -> reporter")
-        return _POOL
+        return _ret(_JUDGE, _POOL, state, "exhausted")
 
     if turn_count >= MAX_SESSION_TURNS:
         logger.warning("[Router] Budget exhausted at judge -> experience_pool")
-        return _POOL
+        return _ret(_JUDGE, _POOL, state, "turn_limit")
 
     if attack_status == "failure":
-        logger.info("[Router] FAILURE (non-recoverable) -> reporter")
-        return _REPORTER
+        logger.info("[Router] FAILURE (non-recoverable) -> intel_updater")
+        return _ret(_JUDGE, _INTEL_UPDATER, state, "failure")
 
     if prometheus_score >= JUDGE_SUCCESS_THRESHOLD:
         logger.info(
             "[Router] Jailbreak confirmed (score=%.1f >= %.1f) -> self_play_remediation",
             prometheus_score, JUDGE_SUCCESS_THRESHOLD,
         )
-        return _REMEDIATION
+        return _ret(_JUDGE, _REMEDIATION, state, "jailbreak")
 
     logger.info(
         "[Router] Attack failed (score=%.1f < %.1f) -> experience_pool -> analyst",
         prometheus_score, JUDGE_SUCCESS_THRESHOLD,
     )
-    return _POOL
+    return _ret(_JUDGE, _POOL, state, "attack_failed")
 
 
 def route_after_pool_on_fail(state: AuditorState) -> str:
@@ -1193,14 +1385,14 @@ def route_after_pool_on_fail(state: AuditorState) -> str:
     """
     if state.get("turn_count", 0) >= MAX_SESSION_TURNS:
         logger.warning("[Router] Budget exhausted after pool (fail path) → reporter")
-        return _REPORTER
+        return _ret(_POOL, _REPORTER, state, "turn_limit")
 
     attack_status = state.get("attack_status", "in_progress")
     if attack_status in ("success", "failure"):
-        return _REPORTER
+        return _ret(_POOL, _REPORTER, state, f"terminal:{attack_status}")
 
     logger.debug("[Router] Pool (fail) → analyst")
-    return _ANALYST
+    return _ret(_POOL, _ANALYST, state, "fail_retry")
 
 
 def route_after_remediation(state: AuditorState) -> str:
@@ -1210,7 +1402,7 @@ def route_after_remediation(state: AuditorState) -> str:
     The experience pool now needs to log the target's defense failure
     (the successful jailbreak) for future self-play training data.
     """
-    return _POOL
+    return _ret(_REMEDIATION, _POOL, state, "always")
 
 
 def route_after_pool_on_success(state: AuditorState) -> str:
@@ -1218,7 +1410,7 @@ def route_after_pool_on_success(state: AuditorState) -> str:
 
     The success event has been logged.  Session is complete.
     """
-    return _REPORTER
+    return _ret(_POOL, _REPORTER, state, "success_complete")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1236,15 +1428,15 @@ def _route_pool_combined(state: AuditorState) -> str:
     turn_count    = state.get("turn_count", 0)
 
     if attack_status == "success":
-        logger.debug("[Router] Pool exit (success path) -> reporter")
-        return _REPORTER
+        logger.debug("[Router] Pool exit (success path) -> intel_updater")
+        return _ret(_POOL, _INTEL_UPDATER, state, "success")
 
     if attack_status == "exhausted" or turn_count >= MAX_SESSION_TURNS:
-        logger.debug("[Router] Pool exit (exhausted path) -> reporter")
-        return _REPORTER
+        logger.debug("[Router] Pool exit (exhausted path) -> intel_updater")
+        return _ret(_POOL, _INTEL_UPDATER, state, "exhausted")
 
     logger.debug("[Router] Pool exit (fail path) -> analyst")
-    return _ANALYST
+    return _ret(_POOL, _ANALYST, state, "fail")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1252,6 +1444,105 @@ def _route_pool_combined(state: AuditorState) -> str:
 # Separated from the module-level `app` variable so the graph can be rebuilt
 # with different configurations (e.g., in tests) without re-importing.
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INTEL MEMORY NODES
+# ─────────────────────────────────────────────────────────────────────────────
+
+def intel_retriever_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
+    """LangGraph node: Pre-session threat intelligence retrieval.
+
+    This is the NEW entry point of the graph (START → intel_retriever → scout).
+    It queries the TLTM vector store for the top-k most relevant historical
+    sessions against ``target_model_id`` and writes the formatted summary into
+    ``historical_intel``.  The scout consumes this field to warm-start with
+    proven tactics and avoid repeating known failure patterns.
+
+    Cold-start safe: returns ``{"historical_intel": ""}`` when no records
+    exist for the target model.  All TLTM errors are silently swallowed;
+    a retrieval failure must never prevent a session from starting.
+    """
+    target  = state.get("target_model_id", "unknown")
+    obj     = state.get("core_malicious_objective", "")
+    logger.info("[IntelRetriever] Querying TLTM for target='%s'", target)
+    intel   = retrieve_target_intel(target, obj)
+
+    graph_ctx: dict[str, Any] = {}
+    mined_failures: list[dict] = []
+    try:
+        from intelligence.rag_attack_planner import build_graph_retrieval_context, _load_mined_failures
+        from intelligence.defense_fingerprinter import empty_fingerprint
+
+        fingerprint = dict(state.get("defense_fingerprint") or empty_fingerprint())
+        graph_ctx = build_graph_retrieval_context(target, obj, fingerprint)
+        mined_failures = _load_mined_failures(state)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[IntelRetriever] Graph/mined-failure preload failed: %s", exc)
+
+    if intel:
+        logger.info(
+            "[IntelRetriever] Historical intel loaded (%d chars) — scout will use it.",
+            len(intel),
+        )
+    else:
+        logger.info("[IntelRetriever] No historical intel found (cold start or new target).")
+    return {
+        "historical_intel": intel,
+        "graph_retrieval_context": graph_ctx,
+        "mined_failures": mined_failures,
+    }
+
+
+def intel_updater_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
+    """LangGraph node: Post-session threat intelligence persistence.
+
+    Runs at the END of every session, just before the reporter, regardless
+    of whether the attack succeeded or failed.  Extracts the session's
+    ``vulnerability_profile`` (built by analyst_node during grooming) and
+    key outcome metrics, then persists a condensed tactical summary to the
+    TLTM vector store for future sessions.
+
+    This is intentionally SEPARATE from experience_pool:
+      • ``experience_pool`` — stores the full session audit trail (proof of jailbreak).
+      • ``intel_updater``   — stores a condensed tactical summary (lessons learned).
+
+    Non-blocking: all storage errors are silently swallowed so the reporter
+    always runs and the session always terminates cleanly.
+    """
+    target  = state.get("target_model_id", "unknown")
+    profile = state.get("vulnerability_profile", {})
+    logger.info(
+        "[IntelUpdater] Persisting intel for target='%s'  status=%s  score=%.1f",
+        target,
+        state.get("attack_status", "unknown"),
+        state.get("prometheus_score", 0.0),
+    )
+    store_target_intel(target, profile, state)
+
+    try:
+        from memory.threat_graph import get_threat_graph
+
+        fingerprint = dict(state.get("defense_fingerprint") or profile.get("defense_fingerprint") or {})
+        outcome = "success" if state.get("attack_status") == "success" else "failure"
+        get_threat_graph(target).upsert_session(state, fingerprint, outcome)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[IntelUpdater] Threat graph session sync failed: %s", exc)
+
+    miner_delta: dict[str, Any] = {}
+    try:
+        from intelligence.pattern_miner import run_pattern_miner
+        miner_delta = run_pattern_miner(state) or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[IntelUpdater] Pattern miner failed: %s", exc)
+
+    try:
+        from research.dataset_builder import log_session_record
+        log_session_record(state)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[IntelUpdater] Dataset builder failed: %s", exc)
+
+    return miner_delta
+
 
 def build_graph() -> CompiledStateGraph:
     """Construct, wire, and compile the complete PromptEvo state machine.
@@ -1285,34 +1576,41 @@ def build_graph() -> CompiledStateGraph:
 
     # ── 2. Register all nodes ─────────────────────────────────────────────
     # Fully-implemented nodes (imported at top of file)
-    graph.add_node(_ANALYST,      safe_node(analyst_node))
-    graph.add_node(_DECOMPOSER,   safe_node(decomposer_node))
-    graph.add_node(_COMBINER,     safe_node(combiner_node))
-    graph.add_node(_JUDGE,        safe_node(_judge_and_score_node))
-    graph.add_node(_REMEDIATION,  safe_node(patch_generator_node))
-    graph.add_node(_REPORTER,     _reporter_node)
+    graph.add_node(_ANALYST,          safe_node(analyst_node))
+    graph.add_node(_DECOMPOSER,       safe_node(decomposer_node))
+    graph.add_node(_COMBINER,         safe_node(combiner_node))
+    graph.add_node(_JUDGE,            safe_node(_judge_and_score_node))
+    graph.add_node(_REMEDIATION,      safe_node(patch_generator_node))
+    graph.add_node(_REPORTER,         _reporter_node)
 
     # Stub / placeholder nodes (replace import + registration as modules are built)
-    graph.add_node(_SCOUT,        safe_node(scout_node))
-    graph.add_node(_ATTACK_SWARM, safe_node(attack_swarm_node))
-    graph.add_node(_TARGET,       safe_node(target_node))                      # raw target: warm-up / decomp / HITL path
-    graph.add_node(_BRANCH_EVAL,  safe_node(branch_eval_node))                 # parallel per-branch evaluator
-    graph.add_node(_BRANCH_MERGE, safe_node(branch_merge_node))                # fan-in: winner selection
-    graph.add_node(_HITL,         safe_node(hitl_node))                        # Human-in-the-Loop breakpoint
-    graph.add_node(_SELF_REFEREE, safe_node(self_referee_node))                # Phase 1
-    graph.add_node(_CLASSIFIER,   safe_node(response_classifier_node))        # Fast 3-way pre-filter
-    graph.add_node(_POOL,         safe_node(reflective_experience_pool_node))
-    graph.add_node(_GCI,          safe_node(gci_node))       # Gradient Conflict Induction
-    graph.add_node(_RMCE,         safe_node(rmce_node))      # Recursive Meta-Cognitive Entrapment
+    graph.add_node(_SCOUT,            safe_node(scout_node))
+    graph.add_node(_ATTACK_SWARM,     safe_node(attack_swarm_node))
+    graph.add_node(_TARGET,           safe_node(target_node))                      # raw target: warm-up / decomp / HITL path
+    graph.add_node(_BRANCH_EVAL,      safe_node(branch_eval_node))                 # parallel per-branch evaluator
+    graph.add_node(_BRANCH_MERGE,     safe_node(branch_merge_node))                # fan-in: winner selection
+    graph.add_node(_HITL,             safe_node(hitl_node))                        # Human-in-the-Loop breakpoint
+    graph.add_node(_SELF_REFEREE,     safe_node(self_referee_node))                # Phase 1
+    graph.add_node(_CLASSIFIER,       safe_node(response_classifier_node))         # Fast 3-way pre-filter
+    graph.add_node(_POOL,             safe_node(reflective_experience_pool_node))
+    graph.add_node(_GCI,              safe_node(gci_node))       # Gradient Conflict Induction
+    graph.add_node(_RMCE,             safe_node(rmce_node))      # Recursive Meta-Cognitive Entrapment
+
+    # Persistent Threat Intelligence Memory bookend nodes
+    graph.add_node(_INTEL_RETRIEVER,  safe_node(intel_retriever_node))  # pre-session: query TLTM
+    graph.add_node(_INTEL_UPDATER,    safe_node(intel_updater_node))    # post-session: persist TLTM
 
     # ── 3. Set entry point ────────────────────────────────────────────────
-    # Every session begins with the scout establishing the trust baseline.
-    graph.set_entry_point(_SCOUT)
+    # Every session begins by loading historical intel from the TLTM vector
+    # store.  The retriever hands off unconditionally to the scout next.
+    graph.set_entry_point(_INTEL_RETRIEVER)
 
     # ── 4. Wire unconditional edges ───────────────────────────────────────
     # These edges have exactly one possible destination and never need a router.
-    graph.add_edge(_COMBINER, _JUDGE)           # combiner → judge (always)
-    graph.add_edge(_REPORTER, END)              # reporter → END  (always)
+    graph.add_edge(_INTEL_RETRIEVER, _SCOUT)        # intel loaded → scout warm-up
+    graph.add_edge(_INTEL_UPDATER,   _REPORTER)     # intel persisted → reporter → END
+    graph.add_edge(_COMBINER,        _JUDGE)         # combiner → judge (always)
+    graph.add_edge(_REPORTER,        END)            # reporter → END  (always)
 
     # ── 5. Wire conditional edges ─────────────────────────────────────────
     # ── 5a. After scout → target (warm-up probe must reach the target model)
@@ -1322,7 +1620,7 @@ def build_graph() -> CompiledStateGraph:
     graph.add_conditional_edges(
         source     = _SCOUT,
         path       = route_after_scout,
-        path_map   = {_TARGET: _TARGET, _ANALYST: _ANALYST, _REPORTER: _REPORTER},
+        path_map   = {_TARGET: _TARGET, _ANALYST: _ANALYST, _INTEL_UPDATER: _INTEL_UPDATER},
     )
 
     # ── 5b. From analyst (3-way primary router) ──────────────────────────
@@ -1330,12 +1628,12 @@ def build_graph() -> CompiledStateGraph:
         source   = _ANALYST,
         path     = route_from_analyst,
         path_map = {
-            _SCOUT:        _SCOUT,
-            _DECOMPOSER:   _DECOMPOSER,
-            _ATTACK_SWARM: _ATTACK_SWARM,
-            _GCI:          _GCI,
-            _RMCE:         _RMCE,
-            _REPORTER:     _REPORTER,
+            _SCOUT:          _SCOUT,
+            _DECOMPOSER:     _DECOMPOSER,
+            _ATTACK_SWARM:   _ATTACK_SWARM,
+            _GCI:            _GCI,
+            _RMCE:           _RMCE,
+            _INTEL_UPDATER:  _INTEL_UPDATER,   # replaces direct _REPORTER path
         },
     )
 
@@ -1406,15 +1704,15 @@ def build_graph() -> CompiledStateGraph:
         source   = _TARGET,
         path     = route_after_target,
         path_map = {
-            _TARGET:       _TARGET,        # loop: more sub-questions remain
-            _COMBINER:     _COMBINER,      # exit: all sub-questions answered
-            _JUDGE:        _JUDGE,         # explicitly routing to judge
-            _CLASSIFIER:   _CLASSIFIER,    # standard mode -> classifier first
-            _ANALYST:      _ANALYST,       # recovery / post-depth-0 warm-up
-            _SELF_REFEREE: _SELF_REFEREE,  # Phase 1: first warm-up at depth=0
-            _RMCE:         _RMCE,          # RMCE multi-turn loop-back
-            _REPORTER:     _REPORTER,      # Adapter errors
-            _REMEDIATION:  _REMEDIATION,   # SeqBranch early-exit on winner (score >= 4.0)
+            _TARGET:         _TARGET,           # loop: more sub-questions remain
+            _COMBINER:       _COMBINER,         # exit: all sub-questions answered
+            _JUDGE:          _JUDGE,            # explicitly routing to judge
+            _CLASSIFIER:     _CLASSIFIER,       # standard mode → classifier first
+            _ANALYST:        _ANALYST,          # recovery / post-depth-0 warm-up
+            _SELF_REFEREE:   _SELF_REFEREE,     # Phase 1: first warm-up at depth=0
+            _RMCE:           _RMCE,             # RMCE multi-turn loop-back
+            _INTEL_UPDATER:  _INTEL_UPDATER,    # Adapter errors → save intel → reporter
+            _REMEDIATION:    _REMEDIATION,      # SeqBranch early-exit on winner (score >= 4.0)
         },
     )
 
@@ -1430,9 +1728,9 @@ def build_graph() -> CompiledStateGraph:
         source   = _JUDGE,
         path     = route_from_judge,
         path_map = {
-            _POOL:       _POOL,         # attack failed → log → retry
-            _REMEDIATION: _REMEDIATION, # attack succeeded → patch → log
-            _REPORTER:   _REPORTER,     # budget exhausted → terminate
+            _POOL:          _POOL,           # attack failed → log → retry
+            _REMEDIATION:   _REMEDIATION,    # attack succeeded → patch → log
+            _INTEL_UPDATER: _INTEL_UPDATER,  # non-recoverable failure → save intel → reporter
         },
     )
 
@@ -1442,16 +1740,17 @@ def build_graph() -> CompiledStateGraph:
     # Because both paths route through the same node, we must distinguish
     # which onward destination is correct by inspecting attack_status.
     #
-    # Fail path:    judge → pool → analyst  (retry loop)
-    # Success path: remediation → pool → reporter  (terminate)
+    # Fail path:    judge → pool → analyst          (retry loop)
+    # Success path: remediation → pool → intel_updater → reporter  (terminate)
+    # Exhausted:    judge → pool → intel_updater → reporter  (terminate)
     #
-    # The router reads attack_status to select between analyst and reporter.
+    # The router reads attack_status to select between analyst and intel_updater.
     graph.add_conditional_edges(
         source   = _POOL,
         path     = _route_pool_combined,
         path_map = {
-            _ANALYST:  _ANALYST,
-            _REPORTER: _REPORTER,
+            _ANALYST:        _ANALYST,
+            _INTEL_UPDATER:  _INTEL_UPDATER,   # replaces direct _REPORTER path
         },
     )
 
@@ -1508,6 +1807,51 @@ app = None
 # ─────────────────────────────────────────────────────────────────────────────
 # GRAPH INTROSPECTION HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
+
+def get_topology_spec() -> dict[str, Any]:
+    """Return the canonical Phase 0 graph topology specification."""
+    return {
+        "entry_point": _INTEL_RETRIEVER,
+        "nodes": list(_GRAPH_USER_NODES),
+        "unconditional_edges": [list(e) for e in _GRAPH_UNCONDITIONAL_EDGES],
+        "conditional_routes": [
+            {"source": src, "path": path, "destinations": list(dests)}
+            for src, path, dests in _GRAPH_CONDITIONAL_ROUTES
+        ],
+    }
+
+
+def compute_topology_hash(app: CompiledStateGraph | None = None) -> str:
+    """SHA-256 hash of the canonical graph topology for regression testing.
+
+    Uses the frozen ``_GRAPH_*`` spec that mirrors ``build_graph()`` wiring.
+    When *app* is provided, verifies compiled user-node count matches spec.
+    """
+    if app is not None:
+        try:
+            compiled_nodes = {
+                n for n in app.get_graph().nodes.keys()
+                if not n.startswith("__")
+            }
+            expected = set(_GRAPH_USER_NODES)
+            if compiled_nodes != expected:
+                logger.warning(
+                    "[Graph] Topology drift: compiled=%s expected=%s",
+                    sorted(compiled_nodes), sorted(expected),
+                )
+        except Exception:
+            logger.debug("topology verification failed", exc_info=True)
+
+    payload = {
+        "nodes": sorted(_GRAPH_USER_NODES),
+        "unconditional_edges": sorted(_GRAPH_UNCONDITIONAL_EDGES),
+        "conditional_routes": sorted(
+            (src, path, dests) for src, path, dests in _GRAPH_CONDITIONAL_ROUTES
+        ),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
 
 def get_graph_ascii() -> str:
     """Return an ASCII representation of the compiled graph for debugging.

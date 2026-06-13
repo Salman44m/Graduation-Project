@@ -28,7 +28,7 @@ Environment Variables
 
   ALLOWED_TARGET_MODELS
       Comma-separated list of allowed target model IDs.
-      Example: ``deepseek-chat,claude-haiku-4-5-20251001``
+      Example: ``llama-3.3-70b-versatile,claude-haiku-4-5-20251001``
       Special value ``*`` disables the allowlist (permits any model).
       Default: the active PromptEvo model pair.
 
@@ -175,12 +175,20 @@ def verify_startup_secrets(*, dry_run: bool | None = None) -> None:
 
     # Role-based validation
     # Category 1: Attacker / Judge / Summariser
+    # Checks the actual active keys for this deployment, not stale generic defaults.
     attacker_keys = {
-        "OPENAI_API_KEY":    os.getenv("OPENAI_API_KEY"),
-        "GROQ_API_KEY":      os.getenv("GROQ_API_KEY"),
-        "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY"),
+        # Generic provider keys (kept as fallback options)
+        "OPENAI_API_KEY":       os.getenv("OPENAI_API_KEY"),
+        "ANTHROPIC_API_KEY":    os.getenv("ANTHROPIC_API_KEY"),
+        # Role-specific Groq keys (preferred over generic GROQ_API_KEY)
+        "GROQ_ATTACKER_KEY_1": os.getenv("GROQ_ATTACKER_KEY_1"),
+        "GROQ_JUDGE_KEY":      os.getenv("GROQ_JUDGE_KEY"),
+        # Fallback generic Groq key
+        "GROQ_API_KEY":        os.getenv("GROQ_API_KEY"),
+        # Gemini summariser key
+        "Gemini_Summarize_KEY": os.getenv("Gemini_Summarize_KEY"),
     }
-    
+
     # Category 2: Target
     target_keys = {
         "TARGET_OPENAI_API_KEY":    os.getenv("TARGET_OPENAI_API_KEY"),
@@ -272,24 +280,6 @@ def probe_provider_connectivity() -> dict[str, str]:
         except Exception as e:
             logger.warning("[Security] Health probe failed for Anthropic: %s", e)
             results["anthropic"] = f"error: {type(e).__name__}"
-
-    # DeepSeek
-    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
-    if deepseek_key and not _looks_like_placeholder_secret(deepseek_key):
-        try:
-            r = httpx.get(
-                "https://api.deepseek.com/models",
-                headers={"Authorization": f"Bearer {deepseek_key}"},
-                timeout=timeout
-            )
-            if r.status_code == 200:
-                results["deepseek"] = "ok"
-            else:
-                logger.warning("[Security] Health probe failed for DeepSeek: HTTP %d", r.status_code)
-                results["deepseek"] = f"error: {r.status_code}"
-        except Exception as e:
-            logger.warning("[Security] Health probe failed for DeepSeek: %s", e)
-            results["deepseek"] = f"error: {type(e).__name__}"
 
     return results
 

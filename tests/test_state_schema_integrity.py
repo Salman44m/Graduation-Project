@@ -23,6 +23,7 @@ from typing import get_type_hints
 from core.state import (
     AuditorState,
     ALL_FIELDS,
+    INTERNAL_EPHEMERAL_FIELDS,
     default_state,
     validate_state_keys,
     validate_state_update,
@@ -65,7 +66,7 @@ def test_all_fields_matches_typed_dict():
     hints = get_type_hints(AuditorState, include_extras=True)
     annotated_keys = set(hints.keys())
     missing_from_all = annotated_keys - ALL_FIELDS
-    extra_in_all = ALL_FIELDS - annotated_keys
+    extra_in_all = ALL_FIELDS - annotated_keys - INTERNAL_EPHEMERAL_FIELDS
     assert not missing_from_all, (
         f"AuditorState fields missing from ALL_FIELDS: {missing_from_all}"
     )
@@ -160,6 +161,22 @@ def test_route_decision_includes_terminal():
     assert "terminate" not in valid_values, (
         "'terminate' should NOT be in RouteDecision — use 'terminal'"
     )
+
+
+def test_route_decision_includes_runtime_values():
+    """RouteDecision must include the route labels actually emitted by code."""
+    from core.state import RouteDecision
+    from typing import get_args
+    valid_values = set(get_args(RouteDecision))
+    assert {"reporter", "analyst_bypass"} <= valid_values
+
+
+def test_hitl_status_includes_runtime_values():
+    """HITLStatus must include the runtime statuses emitted by the HITL node."""
+    from core.state import HITLStatus
+    from typing import get_args
+    valid_values = set(get_args(HITLStatus))
+    assert {"awaiting_hitl", "cli_auto_approved", "human_processed"} <= valid_values
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -97,6 +97,7 @@ from slowapi.errors import RateLimitExceeded
 
 from core.graph import get_app
 from core.state import default_state
+from hitl.hitl_handler import build_hitl_context, _interrupt_value
 
 logger = logging.getLogger("promptevo.api")
 # configure_logging() called at app startup — see below
@@ -248,29 +249,124 @@ def _build_session_llms(req: AuditRequest) -> tuple:
 # CORE EXECUTION FUNCTION  (sync — runs in thread pool)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _merge_state_delta(final: dict[str, Any], delta: dict[str, Any]) -> None:
-    """
-    Merge a state delta into the final state dictionary, respecting the list-append 
-    and counter-increment semantics of the LangGraph AuditorState schema.
-    """
-    list_fields = {
-        "messages", "candidate_branches", "strategy_memory", 
-        "debate_transcript", "sub_questions", "pruned_techniques", "branch_results"
-    }
-    counter_fields = {"turn_count", "api_call_count", "prompt_tokens"}
+def _process_graph_stream(
+    session_id:      str,
+    req:             AuditRequest,
+    started_at:      datetime,
+    stream_input:    Any,
+    langgraph_config: dict[str, Any],
+) -> None:
+    """Helper to stream node updates and manage lifecycle/interrupts consistently."""
+    store = get_audit_store()
+    app_instance = get_app()
+    if app_instance is None:
+        raise RuntimeError("LangGraph app failed to compile")
 
-    for k, v in delta.items():
-        if k in list_fields:
-            if k not in final:
-                final[k] = []
-            if isinstance(v, list):
-                final[k].extend(v)
-            else:
-                final[k].append(v)
-        elif k in counter_fields:
-            final[k] = final.get(k, 0) + (v or 0)
-        else:
-            final[k] = v
+    # Load initial or checkpointer state as final base
+    current_checkpointer_state = app_instance.get_state(langgraph_config)
+    final = dict(current_checkpointer_state.values) if current_checkpointer_state.values else {}
+    if isinstance(stream_input, dict):
+        final.update(stream_input)
+
+    # Let's align on current turn count
+    turn = final.get("turn_count", 0)
+
+    try:
+        for chunk in app_instance.stream(stream_input, langgraph_config, stream_mode="updates"):
+            for node_name, delta in chunk.items():
+                if node_name == "__interrupt__":
+                    current_state = app_instance.get_state(langgraph_config).values
+                    hitl_payload = _interrupt_value(delta)
+                    if not hitl_payload:
+                        hitl_payload = build_hitl_context(current_state)
+
+                    hitl_payload["status"] = "awaiting_hitl"
+                    
+                    store.set_hitl(session_id, hitl_payload)
+                    store.set_status(session_id, "awaiting_hitl")
+                    logger.info("[API] Audit %s hit HITL interrupt", session_id)
+                    return
+
+                turn += 1
+                delta = delta or {}
+
+                event = {
+                    "session_id":        session_id,
+                    "node_name":         node_name,
+                    "turn":              turn,
+                    "cooperation_score": delta.get("cooperation_score"),
+                    "prometheus_score":  delta.get("prometheus_score"),
+                    "attack_status":     delta.get("attack_status"),
+                    "active_technique":  delta.get("active_persuasion_technique"),
+                    "rahs_score":        delta.get("rahs_score"),
+                    "timestamp":         datetime.now(timezone.utc).isoformat(),
+                    "last_message":      _extract_last_message(delta),
+                    "last_role":         _extract_last_role(delta),
+                }
+                store.append_event(session_id, event)
+                store.set_latest_delta(session_id, delta)
+
+    except Exception as exc:
+        logger.error("[API] Audit %s failed: %s", session_id, exc)
+        store.set_status(session_id, "error")
+        store.set_error(session_id, str(exc))
+        return
+
+    # Normal completion
+    completed_state = app_instance.get_state(langgraph_config)
+    if completed_state and completed_state.values:
+        final = dict(completed_state.values)
+
+    completed_at  = datetime.now(timezone.utc)
+    duration_secs = (completed_at - started_at).total_seconds()
+    rahs          = float(final.get("rahs_score", 0.0))
+    band          = _severity_band(rahs)
+
+    ci_passed: Optional[bool] = None
+    if req.block_threshold is not None:
+        ci_passed = rahs <= req.block_threshold
+
+    report = AuditReport(
+        session_id          = session_id,
+        objective           = req.objective,
+        target_model        = req.target_model,
+        attack_status       = str(final.get("attack_status", "unknown")),
+        prometheus_score    = float(final.get("prometheus_score", 0.0)),
+        rahs_score          = rahs,
+        severity_band       = band,
+        cooperation_score   = float(final.get("cooperation_score", 0.0)),
+        total_turns         = int(final.get("turn_count", turn)),
+        tap_depth           = int(final.get("current_depth", 0)),
+        active_technique    = str(final.get("active_persuasion_technique", "")),
+        pruned_techniques   = list(final.get("pruned_techniques", [])),
+        decomposition_used  = bool(final.get("sub_questions")),
+        defense_patch       = str(final.get("defense_patch", "")),
+        debate_turns        = len(final.get("debate_transcript", [])),
+        started_at          = started_at.isoformat(),
+        completed_at        = completed_at.isoformat(),
+        duration_seconds    = round(duration_secs, 2),
+        ci_cd_gate_passed   = ci_passed,
+    )
+
+    store.set_final_state(session_id, final)
+    store.set_status(session_id, "complete")
+    store.set_report(session_id, report)
+
+    try:
+        from infra.observability import emit_session_complete
+        budget = langgraph_config["configurable"].get("session_budget")
+        metrics = langgraph_config["configurable"].get("session_metrics")
+        emit_session_complete(
+            session_id=session_id,
+            attack_status=str(final.get("attack_status", "")),
+            turn_count=int(final.get("turn_count", turn) or 0),
+            budget_summary=budget.summary() if budget else "",
+            metrics_summary=metrics.summary() if metrics else "",
+            extra={"duration_seconds": round(duration_secs, 2), "rahs_score": rahs},
+        )
+    except Exception:
+        pass
+
 
 def _run_audit_sync(
     session_id:      str,
@@ -281,18 +377,7 @@ def _run_audit_sync(
     judge_llm:       Any = None,
     summariser_llm:  Any = None,
 ) -> None:
-    """Execute the LangGraph audit in a background thread.
-
-    Streams node updates into the session store so the SSE endpoint can
-    forward them to connected clients in real-time.
-
-    All LLM/adapter instances are per-session, built by ``_build_session_llms``.
-    They are injected into the graph via the LangGraph config dict so every
-    node can resolve them without touching global state.
-
-    The ``__api__`` flag tells the resolver to fail-closed if a required
-    per-session LLM is missing (prevents silent fallback to globals).
-    """
+    """Execute the LangGraph audit in a background thread."""
     store = get_audit_store()
     store.set_status(session_id, "running")
     
@@ -306,15 +391,19 @@ def _run_audit_sync(
     )
     state["cooperation_score"] = 0.0
 
-    # ── LangGraph config — required by the checkpointer, and carries
-    #    ALL per-session LLM/adapter instances so every node resolves them
-    #    without touching global mutable state.
-    #    __api__=True enforces fail-closed behavior in the resolver. ────
-    from core.constants import SessionBudget
+    from core.constants import SessionBudget, SessionMetrics
+    from infra.observability import bind_session_metrics, set_session_context
     budget = SessionBudget(
         max_llm_calls=int(os.getenv("SESSION_MAX_LLM_CALLS", "200")),
         max_wall_clock_secs=float(os.getenv("SESSION_MAX_WALL_CLOCK", "600")),
     )
+    metrics = SessionMetrics()
+    set_session_context(
+        session_id=session_id,
+        target_model=req.target_model or "unknown",
+        session_metrics=metrics,
+    )
+    bind_session_metrics(metrics)
     
     langgraph_config: dict[str, Any] = {
         "configurable": {
@@ -325,86 +414,13 @@ def _run_audit_sync(
             "judge_llm":        judge_llm,
             "summariser_llm":   summariser_llm,
             "session_budget":   budget,
+            "session_metrics":  metrics,
         },
+        "recursion_limit": 150,
     }
 
-    turn  = 0
-    final: dict[str, Any] = dict(state)
-    events: list[dict] = []
-
     try:
-        try:
-            app_instance = get_app()
-            if app_instance is None:
-                raise RuntimeError("LangGraph app failed to compile")
-                
-            for chunk in app_instance.stream(state, langgraph_config, stream_mode="updates"):
-                for node_name, delta in chunk.items():
-                    turn += 1
-                    delta = delta or {}
-                    _merge_state_delta(final, delta)
-
-                    event = {
-                        "session_id":        session_id,
-                        "node_name":         node_name,
-                        "turn":              turn,
-                        "cooperation_score": delta.get("cooperation_score"),
-                        "prometheus_score":  delta.get("prometheus_score"),
-                        "attack_status":     delta.get("attack_status"),
-                        "active_technique":  delta.get("active_persuasion_technique"),
-                        "rahs_score":        delta.get("rahs_score"),
-                        "timestamp":         datetime.now(timezone.utc).isoformat(),
-                        # Extract last message text for the chat display
-                        "last_message":      _extract_last_message(delta),
-                        "last_role":         _extract_last_role(delta),
-                    }
-                    events.append(event)
-                    store = get_audit_store()
-                    store.append_event(session_id, event)
-                    store.set_latest_delta(session_id, delta)
-
-        except Exception as exc:
-            logger.error("[API] Audit %s failed: %s", session_id, exc)
-            store = get_audit_store()
-            store.set_status(session_id, "error")
-            store.set_error(session_id, str(exc))
-            return
-
-        completed_at  = datetime.now(timezone.utc)
-        duration_secs = (completed_at - started_at).total_seconds()
-        rahs          = float(final.get("rahs_score", 0.0))
-        band          = _severity_band(rahs)
-
-        ci_passed: Optional[bool] = None
-        if req.block_threshold is not None:
-            ci_passed = rahs <= req.block_threshold
-
-        report = AuditReport(
-            session_id          = session_id,
-            objective           = req.objective,
-            target_model        = req.target_model,
-            attack_status       = str(final.get("attack_status", "unknown")),
-            prometheus_score    = float(final.get("prometheus_score", 0.0)),
-            rahs_score          = rahs,
-            severity_band       = band,
-            cooperation_score   = float(final.get("cooperation_score", 0.0)),
-            total_turns         = int(final.get("turn_count", turn)),
-            tap_depth           = int(final.get("current_depth", 0)),
-            active_technique    = str(final.get("active_persuasion_technique", "")),
-            pruned_techniques   = list(final.get("pruned_techniques", [])),
-            decomposition_used  = bool(final.get("sub_questions")),
-            defense_patch       = str(final.get("defense_patch", "")),
-            debate_turns        = len(final.get("debate_transcript", [])),
-            started_at          = started_at.isoformat(),
-            completed_at        = completed_at.isoformat(),
-            duration_seconds    = round(duration_secs, 2),
-            ci_cd_gate_passed   = ci_passed,
-        )
-
-        store = get_audit_store()
-        store.set_final_state(session_id, final)
-        store.set_status(session_id, "complete")
-        store.set_report(session_id, report)
+        _process_graph_stream(session_id, req, started_at, state, langgraph_config)
     finally:
         with _active_sessions_lock:
             _active_sessions.discard(session_id)
@@ -833,12 +849,25 @@ async def submit_hitl_action(
         logger.warning("[HITL] No stored request for session %s — resuming without LLMs", session_id)
         attacker_llm = judge_llm = summariser_llm = target_adapter = None
 
+    started_at_str = store.get_started_at(session_id)
+    if started_at_str:
+        try:
+            started_at = datetime.fromisoformat(started_at_str)
+        except Exception:
+            started_at = datetime.now(timezone.utc)
+    else:
+        started_at = datetime.now(timezone.utc)
+
     # ── Build LangGraph config with proper budget and LLM instances ───────
-    from core.constants import SessionBudget
+    from core.constants import SessionBudget, SessionMetrics
+    from infra.observability import bind_session_metrics, set_session_context
     budget = SessionBudget(
         max_llm_calls=int(os.getenv("SESSION_MAX_LLM_CALLS", "200")),
         max_wall_clock_secs=float(os.getenv("SESSION_MAX_WALL_CLOCK", "600")),
     )
+    metrics = SessionMetrics()
+    set_session_context(session_id=session_id, session_metrics=metrics)
+    bind_session_metrics(metrics)
 
     langgraph_config: dict[str, Any] = {
         "configurable": {
@@ -849,7 +878,9 @@ async def submit_hitl_action(
             "judge_llm":        judge_llm,
             "summariser_llm":   summariser_llm,
             "session_budget":   budget,
+            "session_metrics":  metrics,
         },
+        "recursion_limit": 150,
     }
 
     # ── Resume the graph via BackgroundTasks (managed lifecycle) ───────────
@@ -857,36 +888,10 @@ async def submit_hitl_action(
         with _active_sessions_lock:
             _active_sessions.add(session_id)
         try:
-            try:
-                app_instance = get_app()
-                if app_instance is None:
-                    raise RuntimeError("LangGraph app failed to compile")
-
-                store_inner = get_audit_store()
-                store_inner.set_status(session_id, "running")
-                for chunk in app_instance.stream(
-                    Command(resume=state_delta),
-                    langgraph_config,
-                    stream_mode="updates",
-                ):
-                    for node_name, delta in chunk.items():
-                        delta = delta or {}
-                        event = {
-                            "session_id":   session_id,
-                            "node_name":    node_name,
-                            "turn":         store_inner.event_count(session_id) + 1,
-                            "attack_status": delta.get("attack_status"),
-                            "timestamp":    datetime.now(timezone.utc).isoformat(),
-                            "last_message": _extract_last_message(delta),
-                            "last_role":    _extract_last_role(delta),
-                        }
-                        store_inner.append_event(session_id, event)
-                        store_inner.set_latest_delta(session_id, delta)
-            except Exception as exc:
-                logger.error("[HITL] Resume failed for session %s: %s", session_id, exc)
-                store_err = get_audit_store()
-                store_err.set_status(session_id, "error")
-                store_err.set_error(session_id, f"HITL resume failed: {exc}")
+            store_inner = get_audit_store()
+            store_inner.set_status(session_id, "running")
+            action_dict = {k: v for k, v in action.__dict__.items() if v is not None}
+            _process_graph_stream(session_id, req_obj, started_at, Command(resume=action_dict), langgraph_config)
         finally:
             with _active_sessions_lock:
                 _active_sessions.discard(session_id)

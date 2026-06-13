@@ -1,65 +1,94 @@
-from core.graph import route_from_analyst, route_decomposition_loop, MAX_SESSION_TURNS, COOP_SCOUT_THRESHOLD
+"""Legacy routing tests — updated for Phase 0 router split (intel_updater terminal path)."""
 
-def test_standard_mode_to_attack_swarm():
-    """Test standard mode defaults to attack_swarm from analyst router."""
+import core.graph as graph_module
+from core.graph import (
+    route_from_analyst,
+    route_after_target_decomposition,
+    route_after_target_warmup,
+    route_after_target_attack,
+    MAX_SESSION_TURNS,
+    COOP_SCOUT_THRESHOLD,
+    _INTEL_UPDATER,
+    _ATTACK_SWARM,
+    _SCOUT,
+    _TARGET,
+    _COMBINER,
+    _RMCE,
+    _SELF_REFEREE,
+)
+
+
+def _base(**overrides):
     state = {
+        "grooming_phase_active": False,
         "cooperation_score": 1.0,
         "turn_count": 1,
-        "route_decision": "attack_swarm"
+        "attack_status": "in_progress",
+        "route_decision": "attack_swarm",
     }
-    assert route_from_analyst(state) == "attack_swarm"
+    state.update(overrides)
+    return state
+
+
+def test_standard_mode_to_attack_swarm():
+    state = _base(route_decision="attack_swarm")
+    assert route_from_analyst(state) == _ATTACK_SWARM
+
 
 def test_decomposition_remaining_to_target():
-    """Test decomposition with remaining sub-questions routes to target_node."""
-    state = {
-        "attack_status": "decomposing",
-        "sub_questions": ["Q1", "Q2"],
-        "collected_sub_answers": ["A1"],
-        "decomposition_index": 1
-    }
-    assert route_decomposition_loop(state) == "target"
+    state = _base(
+        attack_status="decomposing",
+        sub_questions=["Q1", "Q2"],
+        collected_sub_answers=["A1"],
+        decomposition_index=1,
+    )
+    assert route_after_target_decomposition(state) == _TARGET
+
 
 def test_decomposition_complete_to_combiner():
-    """Test decomposition complete routes to combiner_node."""
-    state = {
-        "attack_status": "decomposing",
-        "sub_questions": ["Q1", "Q2"],
-        "collected_sub_answers": ["A1", "A2"],
-        "decomposition_index": 2
-    }
-    assert route_decomposition_loop(state) == "combiner"
+    state = _base(
+        attack_status="decomposing",
+        sub_questions=["Q1", "Q2"],
+        collected_sub_answers=["A1", "A2"],
+        decomposition_index=2,
+    )
+    assert route_after_target_decomposition(state) == _COMBINER
+
 
 def test_rmce_loopback():
-    """Test RMCE loopback: routes to rmce_node during Turn 2/3."""
-    state = {
-        "attack_status": "in_progress",
-        "route_decision": "rmce",
-        "rmce_meta_level": 1
-    }
-    assert route_decomposition_loop(state) == "rmce"
+    state = _base(
+        rmce_meta_level=1,
+        route_decision="rmce",
+    )
+    assert route_after_target_attack(state) == _RMCE
+
 
 def test_self_referee_gate():
-    """Test Self-referee gate: depth 0 and enabled routes to self_referee_node."""
-    state = {
-        "attack_status": "in_progress",
-        "route_decision": "analyst",
-        "current_depth": 0,
-        "self_referee_done": False
-    }
-    assert route_decomposition_loop(state) == "self_referee"
+    state = _base(
+        route_decision="analyst",
+        current_depth=0,
+        self_referee_done=False,
+    )
+    assert route_after_target_warmup(state) == _SELF_REFEREE
+
 
 def test_max_turns_exceeded_terminal():
-    """Test max turns exceeded terminates the session and routes to reporter."""
+    max_turns = graph_module.MAX_SESSION_TURNS
     state = {
-        "turn_count": MAX_SESSION_TURNS + 1
+        "grooming_phase_active": False,
+        "cooperation_score": 1.0,
+        "turn_count": max_turns + 1,
+        "attack_status": "in_progress",
+        "route_decision": "",
     }
-    assert route_from_analyst(state) == "reporter"
+    assert route_from_analyst(state) == _INTEL_UPDATER
+
 
 def test_error_recovery_scout_fallback():
-    """Test error recovery / cold start fallback routes to scout."""
-    state = {
-        "turn_count": 1,
-        "cooperation_score": COOP_SCOUT_THRESHOLD - 0.1,
-        "attack_status": "in_progress"
-    }
-    assert route_from_analyst(state) == "scout"
+    from core.constants import THRESHOLD
+    state = _base(
+        turn_count=0,
+        cooperation_score=THRESHOLD.scout_warmup - 0.05,
+        route_decision="",
+    )
+    assert route_from_analyst(state) == _SCOUT

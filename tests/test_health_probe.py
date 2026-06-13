@@ -14,8 +14,7 @@ def test_health_probe_results_getter_setter():
 @patch("httpx.post")
 @patch.dict(os.environ, {
     "OPENAI_API_KEY": "valid_key",
-    "ANTHROPIC_API_KEY": "valid_key",
-    "DEEPSEEK_API_KEY": "valid_key"
+    "ANTHROPIC_API_KEY": "valid_key"
 })
 def test_probe_connectivity_success(mock_post, mock_get):
     mock_resp_get = MagicMock()
@@ -30,16 +29,14 @@ def test_probe_connectivity_success(mock_post, mock_get):
     
     assert results == {
         "openai": "ok",
-        "anthropic": "ok",
-        "deepseek": "ok"
+        "anthropic": "ok"
     }
 
 @patch("httpx.get")
 @patch("httpx.post")
 @patch.dict(os.environ, {
     "OPENAI_API_KEY": "valid_key",
-    "ANTHROPIC_API_KEY": "valid_key",
-    "DEEPSEEK_API_KEY": "valid_key"
+    "ANTHROPIC_API_KEY": "valid_key"
 })
 def test_probe_connectivity_failure(mock_post, mock_get):
     mock_resp_get = MagicMock()
@@ -54,14 +51,12 @@ def test_probe_connectivity_failure(mock_post, mock_get):
     
     assert results == {
         "openai": "error: 401",
-        "anthropic": "error: 401",
-        "deepseek": "error: 401"
+        "anthropic": "error: 401"
     }
 
 @patch.dict(os.environ, {
     "OPENAI_API_KEY": "placeholder_key",
-    "ANTHROPIC_API_KEY": "sk-...",
-    "DEEPSEEK_API_KEY": "your_key_here"
+    "ANTHROPIC_API_KEY": "sk-..."
 })
 def test_probe_skips_placeholders():
     # Because they are placeholders, the probe should skip them without making HTTP requests
@@ -72,12 +67,11 @@ def test_probe_skips_placeholders():
 @patch("httpx.get")
 @patch.dict(os.environ, {
     "OPENAI_API_KEY": "valid_key",
-    "ANTHROPIC_API_KEY": "valid_key",
-    "DEEPSEEK_API_KEY": "valid_key"
+    "ANTHROPIC_API_KEY": "valid_key"
 })
 def test_probe_handles_exceptions(mock_get, mock_post):
     mock_get.side_effect = Exception("Timeout")
     mock_post.side_effect = Exception("Timeout")
     
     results = probe_provider_connectivity()
-    assert results == {"openai": "error: Exception", "anthropic": "error: Exception", "deepseek": "error: Exception"}
+    assert results == {"openai": "error: Exception", "anthropic": "error: Exception"}

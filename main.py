@@ -55,9 +55,13 @@ from rich.table import Table
 from rich.text import Text
 from rich import box
 
-# ─── Core framework ───────────────────────────────────────────────────────────
+# ─── Core state ───────────────────────────────────────────────────────────────
+# NOTE: graph is intentionally NOT imported here at module level.
+# FIX #1 (Execution Order): get_app() / build_graph() must be called only AFTER
+# all CLI overrides have been applied to config.settings, so that the
+# lru_cache'd LLM factories and the graph checkpointer are initialised with the
+# correct settings (e.g. dry_run=True, attacker_model overrides).
 from core.state import AuditorState, default_state
-from core.graph import app, get_routing_config
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBAL CONSOLE (used throughout this file)
@@ -115,10 +119,6 @@ _BAND_STYLES: dict[str, str] = {
     "None":     "dim",
 }
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# LLM FACTORY
-# ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSOLE UI — HELPERS
@@ -202,20 +202,32 @@ def _print_node_event(node_name: str, state_delta: dict[str, Any], turn: int) ->
 
 
 def _print_final_summary(final_state: dict[str, Any]) -> None:
-    """Render the post-session audit summary panel."""
+    """Render the post-session audit summary panel.
+
+    FIX #1 (TypeError): All numeric metrics are coerced to their default
+    primitives before any float formatting or comparison, so that a None value
+    coming out of an incomplete graph run never causes a TypeError.
+    """
     console.print()
     console.print(Rule("[bold]Session Complete[/]"))
 
-    status     = final_state.get("attack_status", "unknown")
-    rahs       = final_state.get("rahs_score", 0.0)
-    prom       = final_state.get("prometheus_score", 0.0)
-    turns      = final_state.get("turn_count", 0)
-    depth      = final_state.get("current_depth", 0)
-    technique  = final_state.get("active_persuasion_technique", "N/A")
-    pruned     = final_state.get("pruned_techniques", [])
+    status     = final_state.get("attack_status") or "unknown"
+    # FIX #1: use `or <default>` so that an explicit None falls back gracefully.
+    rahs       = final_state.get("rahs_score") or 0.0
+    prom       = final_state.get("prometheus_score") or 0.0
+    turns      = final_state.get("turn_count") or 0
+    depth      = final_state.get("current_depth") or 0
+    technique  = final_state.get("active_persuasion_technique") or "N/A"
+    pruned     = final_state.get("pruned_techniques") or []
     decomp     = bool(final_state.get("sub_questions"))
-    patch      = final_state.get("defense_patch", "")
-    sid        = final_state.get("session_id", "N/A")
+    patch      = final_state.get("defense_patch") or ""
+    sid        = final_state.get("session_id") or "N/A"
+
+    # Coerce to the expected types as a final safety net
+    rahs  = float(rahs)
+    prom  = float(prom)
+    turns = int(turns)
+    depth = int(depth)
 
     # Determine severity band for RAHS
     band = "None"
@@ -339,17 +351,10 @@ def run_audit(
     dict[str, Any]
         The final AuditorState after the graph completes.
     """
-    # ── Validate graph compiled ───────────────────────────────────────────
-    from core.graph import get_app
-    
-    app_instance = get_app()
-    if app_instance is None:
-        logger.critical("[CLI] Graph failed to build. Exiting.")
-        sys.exit(1)
-
-    # ── Session setup ─────────────────────────────────────────────────────
-    sid = session_id or str(uuid.uuid4())
-    
+    # ── FIX #1: Apply all config overrides BEFORE importing or calling get_app.
+    # config.get_attacker_llm() / get_judge_llm() are lru_cache'd — they must
+    # be called for the first time only after settings mutations are complete.
+    # ─────────────────────────────────────────────────────────────────────────
     import config
     if dry_run:
         config.settings.dry_run = True
@@ -357,16 +362,42 @@ def run_audit(
         config.settings.attacker_model = attacker_model
     if target_model:
         config.settings.target_model = target_model
-        
+
+    # ── Validate graph compiled (after settings are locked in) ───────────────
+    from core.graph import get_app, get_routing_config, set_cli_mode
+
+    app_instance = get_app()
+    if app_instance is None:
+        logger.critical("[CLI] Graph failed to build. Exiting.")
+        sys.exit(1)
+
+    # ── Session setup ─────────────────────────────────────────────────────────
+    sid = session_id or str(uuid.uuid4())
+
+    # ── FIX #2 (Serialization): Resolve LLM/adapter instances here for
+    # informational display only.  Do NOT pass them into langgraph_config
+    # ["configurable"] — the SQLiteSaver checkpointer cannot JSON-serialize
+    # arbitrary Python objects and will crash on the first checkpoint write.
+    # The llm_resolver.py already has a robust CLI fallback path:
+    #   resolve_llm(config, "attacker_llm", "get_attacker_llm")
+    # which calls config.get_attacker_llm() automatically in CLI mode when
+    # no per-session instance is found in configurable.
     attacker_llm = config.get_attacker_llm()
     target_adptr = config.get_target_adapter()
-    
+
+    # FIX #2 cont.: Register target adapter via the module-level attribute that
+    # config.get_target_adapter() itself checks first (Attempt 1).  This is the
+    # proper IPC mechanism between main.py and the graph without polluting
+    # the serializable configurable dict.
+    import core.graph as _graph_module
+    _graph_module._TARGET_ADAPTER = target_adptr
+
     if attacker_llm:
         m = getattr(attacker_llm, "model_name", config.settings.attacker_model)
         console.print(f"[dim]Attacker LLM: [cyan]{config.settings.attacker_provider} / {m}[/][/]")
     else:
         console.print("[yellow]⚠  No attacker LLM configured or dry run active.[/]")
-        
+
     if target_adptr:
         m = getattr(target_adptr, "model_id", config.settings.target_model)
         console.print(f"[dim]Target adapter: [red]{m}[/] ({config.settings.target_provider})[/]")
@@ -379,14 +410,14 @@ def run_audit(
         or (target_adptr.get_model_id() if hasattr(target_adptr, "get_model_id") else "unknown")
     )
 
-    # ── Build initial state ───────────────────────────────────────────────
+    # ── Build initial state ───────────────────────────────────────────────────
     initial_state: AuditorState = default_state(
         goal         = objective,
         target_model = t_model_id,
         session_id   = sid,
     )
 
-    # ── Print banner ──────────────────────────────────────────────────────
+    # ── Print banner ──────────────────────────────────────────────────────────
     _print_banner(objective, sid, t_model_id)
     cfg = get_routing_config()
     console.print(
@@ -397,34 +428,46 @@ def run_audit(
     console.print()
     console.print(Rule("[dim]Node Execution Stream[/]"))
 
-    # ── Execute graph ─────────────────────────────────────────────────────
-    final_state:  dict[str, Any] = {}
+    # ── Execute graph ─────────────────────────────────────────────────────────
+    # FIX #2: langgraph_config["configurable"] contains ONLY JSON-serializable
+    # primitives.  LLM objects are resolved inside each node via llm_resolver.py
+    # using the fallback path to config.get_*_llm().
     turn_counter: int = 0
     t_start = time.monotonic()
 
-    # ── LangGraph config — required by the checkpointer ─────────────────
-    # We use this same config dictionary for both checkpointing and injecting
-    # per-session LLMs and Adapters directly to the nodes via llm_resolver.py
+    from core.constants import SessionBudget, SessionMetrics
+    from infra.observability import bind_session_metrics, emit_session_complete, set_session_context
+
+    budget = SessionBudget(
+        max_llm_calls=int(os.getenv("SESSION_MAX_LLM_CALLS", "200")),
+        max_wall_clock_secs=float(os.getenv("SESSION_MAX_WALL_CLOCK", "600")),
+    )
+    metrics = SessionMetrics()
+    set_session_context(session_id=sid, target_model=t_model_id, session_metrics=metrics)
+    bind_session_metrics(metrics)
+
     langgraph_config = {
         "configurable": {
             "thread_id": sid,
-            "__api__": False,  # Note this is CLI context, allows legacy fallback in resolver if needed
-            "attacker_llm": attacker_llm,
-            "judge_llm": config.get_judge_llm(),
-            "summariser_llm": config.get_summariser_llm(),
-            "target_adapter": target_adptr,
+            # __api__=False signals llm_resolver to use the CLI fallback path
+            # (config.get_attacker_llm, etc.) instead of failing closed.
+            "__api__": False,
+            "session_budget": budget,
+            "session_metrics": metrics,
         },
-        "recursion_limit": 150,   # default 25 is exhausted by multi-agent graph on multi-turn runs
+        "recursion_limit": 150,  # default 25 is exhausted by multi-agent graph on multi-turn runs
     }
 
-    from core.graph import get_app
-    app_instance = get_app()
-    if app_instance is None:
-        console.print("\n[bold red]ERROR: LangGraph app failed to compile.[/]")
-        sys.exit(1)
-
     if use_stream:
-        # Stream mode: receive one dict per node execution
+        # ── FIX #3 (State Corruption): stream_mode="updates" yields partial
+        # deltas, NOT full state snapshots.  Using dict.update() on these deltas
+        # bypasses LangGraph's reducer functions and corrupts list/counter fields.
+        # The correct approach is to fetch the authoritative final state from
+        # the checkpointer after the stream ends via get_state().values.
+        # We still collect the last delta for live display, but never use it as
+        # the canonical final state.
+        # ─────────────────────────────────────────────────────────────────────
+        last_delta: dict[str, Any] = {}
         try:
             for chunk in app_instance.stream(initial_state, langgraph_config, stream_mode="updates"):
                 # chunk is {node_name: state_delta_dict}
@@ -438,15 +481,28 @@ def run_audit(
                     turn_counter += 1
                     state_delta = state_delta or {}   # guard against None deltas
                     _print_node_event(node_name, state_delta, turn_counter)
-                    # Track the latest full state snapshot
+                    # Track the last emitted delta for display purposes only.
                     if isinstance(state_delta, dict):
-                        final_state.update(state_delta)
+                        last_delta = state_delta
 
         except KeyboardInterrupt:
             console.print("\n[yellow]⚠  Session interrupted by user.[/]")
         except Exception as exc:   # noqa: BLE001
             console.print(f"\n[bold red]ERROR during graph execution:[/] {exc}")
             logger.exception("Graph execution error")
+
+        # FIX #3: After the stream completes, fetch the full, reducer-merged
+        # state from the checkpointer.  This is the single source of truth.
+        try:
+            final_state: dict[str, Any] = app_instance.get_state(langgraph_config).values
+        except Exception as exc:
+            # Graceful degradation: if get_state fails (e.g. in dry-run with no
+            # checkpointer), fall back to merging initial_state + last_delta.
+            logger.warning(
+                "[CLI] get_state() failed (%s) — falling back to initial_state + last_delta",
+                exc,
+            )
+            final_state = {**dict(initial_state), **last_delta}
 
     else:
         # Blocking invoke mode — single call, no streaming output
@@ -457,21 +513,29 @@ def run_audit(
         except Exception as exc:   # noqa: BLE001
             console.print(f"[bold red]ERROR:[/] {exc}")
             logger.exception("Graph invoke error")
+            # Graceful fallback so summary still renders
+            final_state = dict(initial_state)
 
     elapsed = time.monotonic() - t_start
     console.print(Rule())
     console.print(f"[dim]Total wall time: {elapsed:.1f}s[/]")
 
-    # ── Merge initial state so summary fields are always available ────────
+    # ── Merge initial state so summary fields are always available ────────────
+    # initial_state provides safe defaults for any keys the graph did not touch.
     merged = {**dict(initial_state), **final_state}
 
-    # ── Print final summary ───────────────────────────────────────────────
+    # ── Print final summary (FIX #1 applied inside _print_final_summary) ─────
     _print_final_summary(merged)
 
+    emit_session_complete(
+        session_id=sid,
+        attack_status=str(merged.get("attack_status", "")),
+        turn_count=int(merged.get("turn_count", 0) or 0),
+        budget_summary=budget.summary(),
+        metrics_summary=metrics.summary(),
+    )
+
     return merged
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -482,7 +546,11 @@ if __name__ == "__main__":
     args = _parse_args()
     verify_startup_secrets(dry_run=args.dry_run)
 
-    # Setup configs
+    # ── FIX #1: Apply ALL config mutations BEFORE get_app() is ever called.
+    # This block MUST come before run_audit() because run_audit() calls
+    # get_app() internally.  The lru_cache on get_attacker_llm() means the
+    # FIRST call wins permanently — calling get_app() with stale settings
+    # would cache the wrong LLM for the entire session.
     import config
     if args.dry_run:
         config.settings.dry_run = True
@@ -490,6 +558,13 @@ if __name__ == "__main__":
         config.settings.attacker_model = args.attacker_model
     if args.target_model:
         config.settings.target_model = args.target_model
+
+    # ── Activate CLI mode so hitl_node auto-approves payloads ────────────────
+    # HITL_ENABLED=true is used by the Streamlit dashboard (dashboard.py).
+    # In CLI context there is no dashboard listener to send Command(resume=...),
+    # so we tell graph.hitl_node to skip the interrupt() and proceed automatically.
+    import core.graph as _graph_module
+    _graph_module.set_cli_mode(True)
 
     result = run_audit(
         objective      = args.objective,

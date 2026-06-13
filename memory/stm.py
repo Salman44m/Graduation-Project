@@ -65,6 +65,7 @@ References
 from __future__ import annotations
 
 import logging
+import os
 import re
 import textwrap
 from dataclasses import dataclass, field
@@ -77,6 +78,7 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
 )
+from langchain_core.runnables import RunnableConfig
 
 from core.state import AuditorState
 
@@ -89,21 +91,40 @@ _TIKTOKEN_WARNING_EMITTED = False
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Token budget trigger — compression fires when total context exceeds this
-DEFAULT_TOKEN_COMPRESSION_THRESHOLD: int = 3_000
-"""Estimated token count at which the STM triggers a compression cycle."""
+# Old value: 3_000 (Groq TPM budget exhausted before compression fired)
+# New value: 1_200 (fires 2.5× earlier; leaves headroom for output tokens)
+DEFAULT_TOKEN_COMPRESSION_THRESHOLD: int = int(
+    os.getenv("STM_TOKEN_THRESHOLD", "1200")
+)
+"""Estimated token count at which the STM triggers a compression cycle.
+
+Set to 1 200 by default so compression fires BEFORE Groq's TPM rate limit
+is reached (safe limit ≋ 5 000 TPM; at 1 200 tokens compression fires early
+enough that output tokens + overhead fit within the budget).
+Override via STM_TOKEN_THRESHOLD env var.
+"""
 
 # How many of the most recent messages to always keep verbatim (recency window)
-# These are never compressed regardless of token count, to preserve conversational flow
-RECENCY_WINDOW: int = 6
-"""Number of most-recent messages always kept verbatim (never summarised)."""
+# Old value: 6 (kept 6 × ~300 = 1 800 tokens verbatim unconditionally)
+# New value: 2 (matches state.py MSG_RECENCY_WINDOW; 2 × 300 = 600 tokens floor)
+RECENCY_WINDOW: int = int(os.getenv("STM_RECENCY_WINDOW", "2"))
+"""Number of most-recent messages always kept verbatim (never summarised).
+
+Reduced from 6 to 2 to align with the new state.py _MSG_RECENCY_WINDOW.
+Historical context is now in episodic_records, not in the message list.
+"""
 
 # Approximate characters-per-token ratio for the fallback estimator
 CHARS_PER_TOKEN: float = 3.8
 """Average chars per token for the offline fallback estimator (GPT-4 / Llama average)."""
 
 # Maximum tokens the summarisation LLM is asked to use for the summary
-SUMMARY_MAX_TOKENS: int = 400
-"""Token budget given to the summariser LLM for its compressed output."""
+SUMMARY_MAX_TOKENS: int = int(os.getenv("SUMMARY_MAX_TOKENS", "300"))
+"""Token budget given to the summariser LLM for its compressed output.
+
+Reduced from 400 to 300 to keep the compressed context concise.
+Override via SUMMARY_MAX_TOKENS env var.
+"""
 
 from core.constants import RETRY
 MAX_RETRIES: int = RETRY.default
@@ -206,19 +227,7 @@ def _message_text(msg: BaseMessage) -> str:
 
 
 def _is_protected(msg: BaseMessage, protected_set: set[str]) -> bool:
-    """Return True if *any* protected block string is present in the message.
-
-    Uses substring matching rather than equality so that a protected block
-    that is embedded inside a longer message (e.g., a PAP narrative inside a
-    multi-paragraph prompt) is correctly caught.
-
-    Parameters
-    ──────────
-    msg :
-        The message to test.
-    protected_set :
-        Pre-built set of protected block strings from state["protected_blocks"].
-    """
+    """Return True if *any* protected block string is present in the message."""
     text = _message_text(msg)
     for block in protected_set:
         if block and len(block) >= 8 and block in text:
@@ -227,13 +236,7 @@ def _is_protected(msg: BaseMessage, protected_set: set[str]) -> bool:
 
 
 def _is_compressible_filler(msg: BaseMessage) -> bool:
-    """Return True if this message is likely benign conversational filler.
-
-    Compressible candidates:
-      • AI refusals (contain standard refusal phrasing)
-      • Very short acknowledgement messages (< 20 tokens)
-      • Messages with hollow courtesy openers and no technical content
-    """
+    """Return True if this message is likely benign conversational filler."""
     text = _message_text(msg)
     if estimate_tokens(text) < 15:
         return True
@@ -255,22 +258,7 @@ def classify_messages(
     2. RECENT     — last ``recency_window`` non-system messages
     3. IMMUTABLE  — contains a protected block string
     4. COMPRESSIBLE — identified as benign filler
-    5. IMMUTABLE  — default for any unclassified message (conservative fallback:
-                     when in doubt, preserve rather than compress)
-
-    Parameters
-    ──────────
-    messages :
-        The full ``state["messages"]`` list.
-    protected_blocks :
-        ``state["protected_blocks"]`` list.
-    recency_window :
-        Number of non-system tail messages always kept verbatim.
-
-    Returns
-    ───────
-    list[tuple[BaseMessage, MessageClass]]
-        Same ordering as input; each message paired with its class.
+    5. IMMUTABLE  — default for any unclassified message (conservative fallback)
     """
     protected_set = {b for b in protected_blocks if b and len(b) >= 8}
 
@@ -317,25 +305,7 @@ def classify_messages(
 def _extract_protected_block_messages(
     protected_blocks: list[str],
 ) -> list[HumanMessage]:
-    """Convert the raw ``protected_blocks`` strings into HumanMessages.
-
-    Each block is wrapped in an ``<immutable>`` tag so downstream models
-    can visually distinguish load-bearing adversarial content from
-    summarised context when reading the compressed brief.
-
-    The tag is purely informational — it signals to any agent reading
-    the context that this content has legal status and must not be altered.
-
-    Parameters
-    ──────────
-    protected_blocks :
-        ``state["protected_blocks"]`` list.
-
-    Returns
-    ───────
-    list[HumanMessage]
-        One HumanMessage per non-empty protected block.
-    """
+    """Convert the raw ``protected_blocks`` strings into HumanMessages."""
     result: list[HumanMessage] = []
     for i, block in enumerate(protected_blocks):
         if not block or not block.strip():
@@ -346,11 +316,7 @@ def _extract_protected_block_messages(
 
 
 def _strip_immutable_tags(text: str) -> str:
-    """Remove ``<immutable ...>`` wrapper tags from text, keeping the content.
-
-    Used when the protected block messages need to be read by an agent
-    that should see only the raw content, not the tagging markup.
-    """
+    """Remove ``<immutable ...>`` wrapper tags from text, keeping the content."""
     return re.sub(r"<immutable[^>]*>\n?(.*?)\n?</immutable>", r"\1", text, flags=re.DOTALL)
 
 
@@ -390,21 +356,7 @@ _SUMMARISER_USER_TEMPLATE = textwrap.dedent("""\
 
 
 def _format_messages_for_summariser(messages: list[BaseMessage]) -> str:
-    """Render a list of messages as a plain text conversation for the summariser.
-
-    Format per message:
-        [ROLE]: <content>
-
-    Parameters
-    ──────────
-    messages :
-        List of compressible messages to format.
-
-    Returns
-    ───────
-    str
-        Multi-line conversation string.
-    """
+    """Render a list of messages as a plain text conversation for the summariser."""
     lines: list[str] = []
     for msg in messages:
         role = {
@@ -425,41 +377,7 @@ def _format_messages_for_summariser(messages: list[BaseMessage]) -> str:
 
 @dataclass
 class CompressionResult:
-    """Full audit record of a single STM compression cycle.
-
-    Attributes
-    ──────────
-    compressed : bool
-        True if a compression cycle actually ran (token threshold was hit).
-
-    original_token_count : int
-        Estimated tokens before compression.
-
-    final_token_count : int
-        Estimated tokens after compression.
-
-    tokens_saved : int
-        Difference: original - final.
-
-    messages_compressed : int
-        Number of messages passed through the summarisation LLM.
-
-    messages_preserved_immutable : int
-        Number of messages kept verbatim as immutable blocks.
-
-    messages_preserved_recent : int
-        Number of messages kept verbatim in the recency window.
-
-    summary_text : str
-        The raw text output from the summarisation LLM.
-
-    new_messages : list[BaseMessage]
-        The fully reconstructed message list (the main deliverable).
-
-    protected_blocks_reinjected : int
-        Number of protected blocks re-injected into the final context.
-    """
-
+    """Full audit record of a single STM compression cycle."""
     compressed:                    bool              = False
     original_token_count:          int               = 0
     final_token_count:             int               = 0
@@ -482,22 +400,7 @@ def _invoke_summariser(
     max_tokens: int = SUMMARY_MAX_TOKENS,
     config: "RunnableConfig | None" = None,
 ) -> str:
-    """Call the summarisation LLM on the compressible message segment.
-
-    Parameters
-    ──────────
-    compressible_messages :
-        Messages classified as COMPRESSIBLE (benign filler).
-    llm :
-        The summarisation model instance.
-    max_tokens :
-        Token budget hint for the summariser.
-
-    Returns
-    ───────
-    str
-        Compressed summary text, or a fallback concatenation if the LLM fails.
-    """
+    """Call the summarisation LLM on the compressible message segment."""
     if not compressible_messages:
         return ""
 
@@ -512,11 +415,19 @@ def _invoke_summariser(
         )
     )
 
+    # Apply Token Governor to the summariser call itself
+    try:
+        from core.token_governor import gate
+        model_name = getattr(llm, "model_name", None) or getattr(llm, "model", "default")
+        msgs_to_send, _ = gate("stm_compression", [system_msg, user_msg], None, config, model_name)
+    except Exception:
+        msgs_to_send = [system_msg, user_msg]
+
     for attempt in range(1, RETRY.default + 2):
         try:
             logger.debug("[STM] Summariser call attempt %d", attempt)
-            response = llm.invoke([system_msg, user_msg])
-            
+            response = llm.invoke(msgs_to_send)
+
             from core.llm_resolver import record_budget_call
             in_tok = response.usage_metadata.get("input_tokens", 0) if hasattr(response, "usage_metadata") and response.usage_metadata else 0
             out_tok = response.usage_metadata.get("output_tokens", 0) if hasattr(response, "usage_metadata") and response.usage_metadata else 0
@@ -537,8 +448,7 @@ def _invoke_summariser(
         except Exception as exc:   # noqa: BLE001
             logger.warning("[STM] Summariser error attempt %d: %s", attempt, exc)
 
-    # Graceful fallback: concatenate the raw texts with a marker so no
-    # context is silently dropped even if the LLM is unavailable
+    # Graceful fallback: concatenate the raw texts
     logger.warning("[STM] Summariser failed — using raw concatenation fallback.")
     fallback_parts = [f"[{getattr(m,'type','?').upper()}] {_message_text(m)}"
                       for m in compressible_messages]
@@ -552,39 +462,7 @@ def _reconstruct_messages(
     protected_block_messages: list[HumanMessage],
     recent_messages: list[BaseMessage],
 ) -> list[BaseMessage]:
-    """Assemble the final compressed message list.
-
-    Final ordering (mirrors the output format in the module docstring):
-
-        [system_messages] + [summary_message] + [immutable_messages]
-        + [protected_block_messages] + [recent_messages]
-
-    This ordering is deliberate:
-      • System prompt first (standard LLM convention).
-      • Compressed summary next (establishes historical context).
-      • Immutable messages from classified history (preserved verbatim).
-      • Protected blocks last among the "anchors" (near-attention ensures
-        maximum magnetic field effect on the target's generation).
-      • Recent messages at the very end (highest recency weight in attention).
-
-    Parameters
-    ──────────
-    system_messages :
-        All SystemMessage objects from the original list.
-    summary_text :
-        Compressed text from the summarisation LLM.
-    immutable_messages :
-        Messages classified as IMMUTABLE (non-compressible, non-recent).
-    protected_block_messages :
-        HumanMessages wrapping each protected block with ``<immutable>`` tags.
-    recent_messages :
-        Messages in the recency window (always verbatim).
-
-    Returns
-    ───────
-    list[BaseMessage]
-        Fully reconstructed message list.
-    """
+    """Assemble the final compressed message list."""
     reconstructed: list[BaseMessage] = []
 
     # 1. System messages (never touched)
@@ -625,69 +503,16 @@ def compress_context(
 ) -> dict[str, Any]:
     """Compress the conversation context using the Selective Immutability Protocol.
 
-    This is the primary public function and the LangGraph node entry point.
-    It implements the full SIP pipeline described in Section 5.1:
-
     Pipeline
     ────────
-    1. **Token audit** — estimate total tokens in ``state["messages"]``.
-       If below ``token_threshold`` and not ``force``-triggered, return
-       immediately with an empty dict (no-op — no state changes needed).
-
-    2. **Classify messages** — assign every message a :class:`MessageClass`
-       using :func:`classify_messages`.  Protected block detection uses
-       substring matching against ``state["protected_blocks"]``.
-
-    3. **Summarise compressible segment** — collect all COMPRESSIBLE messages,
-       format them as a plain-text conversation, and invoke the summariser LLM.
-       The LLM sees ONLY this segment; it never sees immutable content.
-
-    4. **Reconstruct** — assemble the final message list in the canonical
-       SIP order:
-         [system] + [summary] + [immutable_from_history]
-         + [protected_block_injections] + [recent_verbatim]
-
-    5. **Validate** — assert that no protected block string has been lost
-       from the reconstructed list.  Log a critical error if any block
-       is missing (indicates a classification bug).
-
-    6. **Return state delta** — returns ``{"messages": new_messages}`` for
-       LangGraph's reducer to merge.  The ``protected_blocks`` list itself
-       is unchanged; only the ``messages`` field is updated.
-
-    Parameters
-    ──────────
-    state : AuditorState
-        Full shared graph state.  Reads ``messages`` and ``protected_blocks``.
-
-    llm : BaseChatModel | None
-        Summarisation model.  When None, attempts ``config.get_summariser_llm()``.
-        If still unavailable, uses a raw-concatenation fallback so no context
-        is silently dropped.
-
-    token_threshold : int
-        Compression fires when total tokens exceed this value.
-        Default: ``DEFAULT_TOKEN_COMPRESSION_THRESHOLD`` (3 000 tokens).
-
-    recency_window : int
-        Number of most-recent messages always kept verbatim.
-        Default: ``RECENCY_WINDOW`` (6 messages).
-
-    force : bool
-        Set to True to run compression regardless of token count.
-        Useful for testing and for pre-compression before multi-turn
-        decomposition loops begin.
-
-    Returns
-    ───────
-    dict[str, Any]
-        Partial state update.  Contains ``{"messages": new_messages}`` when
-        compression ran, or ``{}`` when the threshold was not met.
-
-    Raises
-    ──────
-    Does not raise.  All errors are caught, logged, and handled gracefully.
-    A failed compression returns the original messages unchanged.
+    1. Token audit — estimate total tokens. If below threshold and not force, no-op.
+    2. Classify messages by SIP policy.
+    3. Resolve summariser LLM (Gemini #2 primary, Groq KEY_3 backup).
+    4. Summarise compressible segment.
+    5. Build protected block injection (deduplicated against immutable_messages).
+    6. Reconstruct final message list.
+    7. Integrity validation.
+    8. Log compression metrics.
     """
     messages:         list[BaseMessage] = list(state.get("messages", []))
     protected_blocks: list[str]         = list(state.get("protected_blocks", []))
@@ -733,38 +558,46 @@ def compress_context(
         len(immutable_messages), len(recent_messages),
     )
 
-    # If nothing is compressible, there's nothing to do
     if not compressible_messages:
         logger.info("[STM] No compressible messages found — compression skipped.")
         return {}
 
-    # ── Step 3: Resolve summariser LLM ───────────────────────────────────
+    # ── Step 3: Resolve summariser LLM ────────────────────────────────────
     if llm is None:
+        # Primary: use central LLM router (Gemini #2 for summariser)
+        try:
+            from core.llm_router import get_llm
+            llm = get_llm("summariser")
+        except Exception:
+            pass
+    if llm is None:
+        # Secondary: per-session injected LLM
         from core.llm_resolver import resolve_llm
         llm = resolve_llm(config, "summariser_llm", "get_summariser_llm")
     if llm is None:
         logger.warning(
-            "[STM] summariser_llm not available.  "
+            "[STM] summariser_llm not available (Gemini+Groq both failed).  "
             "Using raw-concatenation fallback."
         )
 
     # ── Step 4: Summarise compressible segment ────────────────────────────
-    # The summariser LLM sees ONLY the compressible messages.
-    # It is completely isolated from immutable and protected content.
     if llm is not None:
         summary_text = _invoke_summariser(compressible_messages, llm, SUMMARY_MAX_TOKENS, config=config)
     else:
-        # Hard fallback: no LLM available — preserve compressible messages as-is
-        # to guarantee zero context loss (conservative, but never silently drops content)
         logger.warning("[STM] No summariser LLM — preserving compressible messages verbatim.")
         summary_text = _format_messages_for_summariser(compressible_messages)
 
     # ── Step 5: Build protected block injection messages ──────────────────
-    # These are taken directly from state["protected_blocks"], not from the
-    # classified message list — they are re-injected *even if* they were already
-    # present in the immutable_messages (deduplication is acceptable for
-    # protected blocks; duplication is safer than omission).
-    protected_block_msgs = _extract_protected_block_messages(protected_blocks)
+    # BUGFIX (AD-6 / F-14): Deduplicate protected blocks against immutable_messages.
+    # The original code re-injected ALL protected blocks even when they were already
+    # present verbatim in immutable_messages, causing double-injection.
+    # Fix: only inject blocks whose content is NOT already in immutable_messages.
+    immutable_text = " ".join(_message_text(m) for m in immutable_messages)
+    non_duplicate_blocks: list[str] = [
+        block for block in protected_blocks
+        if block and len(block) >= 20 and block[:40] not in immutable_text
+    ]
+    protected_block_msgs = _extract_protected_block_messages(non_duplicate_blocks)
 
     # ── Step 6: Reconstruct final message list ────────────────────────────
     new_messages = _reconstruct_messages(
@@ -776,14 +609,10 @@ def compress_context(
     )
 
     # ── Step 7: Integrity validation ─────────────────────────────────────
-    # Verify that every non-trivial protected block is still present in
-    # the reconstructed context.  A missing block would weaken the magnetic
-    # field and degrade attack effectiveness.
     new_context_text = " ".join(_message_text(m) for m in new_messages)
     missing_blocks: list[str] = []
     for block in protected_blocks:
         if block and len(block) >= 20:
-            # Check raw content (tags may have been added)
             raw_text = _strip_immutable_tags(new_context_text)
             if block not in raw_text and block not in new_context_text:
                 missing_blocks.append(block[:60] + "…")
@@ -794,8 +623,6 @@ def compress_context(
             "reconstruction!  Missing (truncated): %s",
             len(missing_blocks), missing_blocks,
         )
-        # SAFETY: on integrity failure, return the ORIGINAL messages unchanged
-        # to ensure the attack state is not corrupted.
         logger.critical("[STM] Returning original messages unmodified to prevent data loss.")
         return {"messages": messages}
     else:
@@ -825,25 +652,7 @@ def stm_compression_node(
     config: RunnableConfig | None = None,
     llm: BaseChatModel | None = None,
 ) -> dict[str, Any]:
-    """LangGraph node wrapper around :func:`compress_context`.
-
-    Can be inserted into the graph at any point where context window
-    management is required — typically wired as a conditional edge from
-    analyst_node that fires when turn_count crosses a multiple of a
-    configured compression interval.
-
-    Parameters
-    ──────────
-    state : AuditorState
-        Full shared graph state.
-    llm : BaseChatModel | None
-        Summarisation LLM (passed through to compress_context).
-
-    Returns
-    ───────
-    dict[str, Any]
-        Partial state update (``{"messages": new_messages}`` or ``{}``).
-    """
+    """LangGraph node wrapper around :func:`compress_context`."""
     logger.info("=== stm_compression_node  [turn=%d] ===", state.get("turn_count", 0))
     return compress_context(state, config=config, llm=llm)
 
@@ -853,20 +662,7 @@ def stm_compression_node(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_context_report(state: AuditorState) -> dict[str, Any]:
-    """Return a diagnostic snapshot of the current context window state.
-
-    Useful for logging, debugging, and the final audit report.
-
-    Returns a dict with:
-      • ``total_tokens``          — estimated current token count
-      • ``threshold``             — configured compression threshold
-      • ``needs_compression``     — bool: True if threshold is exceeded
-      • ``message_count``         — total message count
-      • ``protected_block_count`` — number of protected blocks registered
-      • ``protected_block_tokens``— estimated tokens in protected blocks
-      • ``compressible_tokens``   — estimated tokens in compressible messages
-      • ``classification_summary``— per-class message counts
-    """
+    """Return a diagnostic snapshot of the current context window state."""
     messages         = list(state.get("messages", []))
     protected_blocks = list(state.get("protected_blocks", []))
 

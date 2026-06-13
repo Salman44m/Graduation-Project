@@ -1,0 +1,13 @@
+{
+  "directed": true,
+  "multigraph": true,
+  "graph": {},
+  "nodes": [
+    {
+      "node_type": "Target",
+      "key": "llama-3.1-8b-instant",
+      "id": "Target:llama-3.1-8b-instant"
+    }
+  ],
+  "edges": []
+}
