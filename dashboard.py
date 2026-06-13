@@ -981,7 +981,7 @@ def _render_hitl_panel(hitl: dict) -> None:
         _hk = f"hitl_payload_{sid}"
         if _hk in st.session_state:
             del st.session_state[_hk]
-        label = "EDITED" if action == "edited" else "APPROVED"
+        label = "EDITED" if action == "edit" else "APPROVED"
         st.session_state.events.append({
             "turn": int(turn) + 1, "node": f"hitl_{action}",
             "coop": None, "prom": None, "rahs": None, "status": None,
@@ -995,7 +995,7 @@ def _render_hitl_panel(hitl: dict) -> None:
             if not payload.strip():
                 st.error("⛔ Payload cannot be empty. Reset or type a valid payload before sending.")
             else:
-                _submit("approved", payload)
+                _submit("approve", payload)
                 st.rerun()
 
     with bc2:
@@ -1005,7 +1005,7 @@ def _render_hitl_panel(hitl: dict) -> None:
             if not edited.strip():
                 st.error("⛔ Payload cannot be empty. Reset or type a valid payload before sending.")
             else:
-                _submit("edited" if is_edited else "approved", edited)
+                _submit("edit" if is_edited else "approve", edited)
                 st.rerun()
 
     with bc3:
