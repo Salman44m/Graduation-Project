@@ -957,11 +957,11 @@ def _render_hitl_panel(hitl: dict) -> None:
     )
 
     diff       = len(edited) - len(payload)
-    diff_label = f"+{diff} chars" if diff > 0 else (f"{diff} chars" if diff < 0 else "unchanged")
+    diff_label = f"+{diff} chars" if diff > 0 else (f"{diff} chars" if diff < 0 else "no manual edits")
     diff_colour = "#10b981" if diff == 0 else "#f59e0b"
     st.markdown(
         f'<div style="font-size:0.65rem;color:{diff_colour};margin-top:0.2rem;">'
-        f'{diff_label} vs original  ({len(edited)} chars total)</div>',
+        f'{diff_label} vs generated  ({len(edited)} chars total)</div>',
         unsafe_allow_html=True,
     )
     st.markdown("")

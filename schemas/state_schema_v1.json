@@ -1,4 +1,57 @@
 {
+  "schema_version": "1.0.0",
+  "phase_1_complete": true,
+  "fields": {
+    "defense_fingerprint": {
+      "type": "dict",
+      "phase_added": "1A"
+    },
+    "fingerprint_observation_count": {
+      "type": "int",
+      "phase_added": "1A"
+    },
+    "threat_graph_summary": {
+      "type": "dict",
+      "phase_added": "1B"
+    },
+    "graph_retrieval_context": {
+      "type": "dict",
+      "phase_added": "1C"
+    },
+    "attack_plan": {
+      "type": "dict",
+      "phase_added": "1C"
+    },
+    "curriculum_plan": {
+      "type": "list",
+      "phase_added": "1D"
+    },
+    "curriculum_stage": {
+      "type": "int",
+      "phase_added": "1D"
+    },
+    "grooming_tactic": {
+      "type": "str",
+      "phase_added": "1E"
+    },
+    "mined_patterns": {
+      "type": "list",
+      "phase_added": "1E"
+    },
+    "mined_failures": {
+      "type": "list",
+      "phase_added": "1E"
+    },
+    "mined_patterns_summary": {
+      "type": "dict",
+      "phase_added": "1E"
+    },
+    "ensemble_scores": {
+      "type": "dict",
+      "phase_added": "1F"
+    }
+  },
+  "field_count": 83,
   "all_fields": [
     "_cleartext_payload",
     "_current_eval_branch",
@@ -27,10 +80,12 @@
     "decomposition_index",
     "defense_fingerprint",
     "defense_patch",
+    "ensemble_scores",
     "episodic_records",
     "epistemic_anchors",
     "evolved_technique",
     "experience_pool_key",
+    "fingerprint_observation_count",
     "gci_conflict_type",
     "gci_deadlock_score",
     "gci_scenario_elements",
@@ -39,14 +94,15 @@
     "grooming_directives",
     "grooming_escalation_level",
     "grooming_phase_active",
+    "grooming_tactic",
     "historical_intel",
     "hitl_status",
-    "judge_ensemble_scores",
     "latest_feedback",
     "latest_feedback_structured",
     "messages",
     "mined_failures",
     "mined_patterns",
+    "mined_patterns_summary",
     "pap_technique_history",
     "pending_payload",
     "prior_decompositions",
@@ -77,29 +133,8 @@
     "target_defense_profile",
     "target_error",
     "target_model_id",
+    "threat_graph_summary",
     "turn_count",
     "vulnerability_profile"
-  ],
-  "field_count": 79,
-  "grooming_fields": [
-    "current_grooming_directive",
-    "current_grooming_tactic",
-    "defense_fingerprint",
-    "grooming_cooperation_history",
-    "grooming_directives",
-    "grooming_escalation_level",
-    "grooming_phase_active",
-    "vulnerability_profile"
-  ],
-  "intelligence_fields": [
-    "attack_plan",
-    "curriculum_plan",
-    "curriculum_stage",
-    "defense_fingerprint",
-    "graph_retrieval_context",
-    "judge_ensemble_scores",
-    "mined_failures",
-    "mined_patterns"
-  ],
-  "version": "1.0.0"
+  ]
 }

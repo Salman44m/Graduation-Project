@@ -1281,7 +1281,10 @@ def analyst_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
             _critic_llm = resolve_llm(config, "attacker_llm", "get_attacker_llm")
 
         # ── 1. Compute blended cooperation score for grooming evaluation ────────
-        _objective   = state.get("core_malicious_objective", "")
+        # SANS FIX: Grade the target against the immediate grooming sub-goal, 
+        # not the final malicious payload. Otherwise, successful persona adoption 
+        # is blindly scored as 0.0 semantic alignment.
+        _objective   = state.get("current_grooming_directive", "") or state.get("current_grooming_tactic", "") or state.get("core_malicious_objective", "")
         _last_resp   = _get_last_assistant_text(state)
         _legacy_coop = _calculate_cooperation_score(state)
         _sem_align   = _semantic_alignment_score(_last_resp, _objective, _critic_llm, config=config, legacy_coop=_legacy_coop)
@@ -1397,14 +1400,20 @@ def analyst_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
                 _coop, _rec_attack,
             )
 
-            from intelligence.rag_attack_planner import generate_attack_plan
+            from intelligence.rag_attack_planner import RagAttackPlanner
 
-            _plan_state = {
-                **state,
-                "defense_fingerprint": _fingerprint,
-                "vulnerability_profile": _vulnerability_profile,
-            }
-            _attack_plan = generate_attack_plan(_plan_state)
+            _attack_plan = {}
+            try:
+                planner = RagAttackPlanner()
+                _attack_plan = planner.build_attack_plan(
+                    target_id=state.get("target_model_id", "unknown"),
+                    defense_fingerprint=_fingerprint,
+                    graph_context=dict(state.get("graph_retrieval_context") or {}),
+                    tltm_context=list(state.get("historical_intel") or [])
+                )
+            except Exception as exc:
+                logger.warning("[Analyst] Attack plan generation failed: %s", exc)
+                _attack_plan = {}
             if _attack_plan.get("recommended_route"):
                 _rec_attack = _attack_plan["recommended_route"]
 
@@ -1413,6 +1422,8 @@ def analyst_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
                 "current_grooming_directive":   "",
                 "current_grooming_tactic":      _critic_out["next_tactic"],
                 "grooming_escalation_level":    _new_escalation,
+                "curriculum_plan":              state.get("curriculum_plan", []),
+                "curriculum_stage":             state.get("curriculum_stage", 0),
                 "defense_fingerprint":            _fingerprint,
                 "vulnerability_profile":        _vulnerability_profile,
                 "attack_plan":                    _attack_plan,
@@ -1422,6 +1433,7 @@ def analyst_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
                 "cooperation_score":            _coop,
                 "semantic_alignment_score":     _sem_align,
                 "analyst_route_suggestion":     _rec_attack,
+                "route_decision":               _rec_attack,
                 "turn_count":                   _new_turn_count,
             }
         else:
@@ -1437,12 +1449,17 @@ def analyst_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
                 "current_grooming_directive":   _critic_out["directive"],
                 "current_grooming_tactic":      _critic_out["next_tactic"],
                 "grooming_escalation_level":    _new_escalation,
+                "curriculum_plan":              state.get("curriculum_plan", []),
+                "curriculum_stage":             state.get("curriculum_stage", 0),
+                "attack_plan":                  state.get("attack_plan", {}),
+                "defense_fingerprint":          state.get("defense_fingerprint", {}),
                 "grooming_cooperation_history": [_coop],
                 "grooming_directives":          [_directive_entry],
                 "epistemic_anchors":            _anchors_dedup,
                 "cooperation_score":            _coop,
                 "semantic_alignment_score":     _sem_align,
                 "analyst_route_suggestion":     "scout",
+                "route_decision":               "scout",
                 "turn_count":                   _new_turn_count,
             }
 
@@ -1516,21 +1533,33 @@ def analyst_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
             guardrail_profile.get("total_patches", 0),
         )
 
-    from intelligence.curriculum_planner import (
-        advance_curriculum_stage,
-        build_curriculum_plan,
-        curriculum_to_crescendo_steps,
-    )
-
     curriculum_plan = list(state.get("curriculum_plan") or [])
     curriculum_stage = int(state.get("curriculum_stage") or 0)
-    if not curriculum_plan:
-        curriculum_plan = build_curriculum_plan(state)
-    curriculum_stage = advance_curriculum_stage({
-        **state,
-        "cooperation_score": new_cooperation_score,
-        "target_defense_profile": defense_profile,
-    })
+    recommended_tactic = state.get("current_grooming_tactic", "")
+    
+    try:
+        from intelligence.curriculum_planner import CurriculumPlanner, curriculum_to_crescendo_steps
+        planner = CurriculumPlanner()
+        
+        # Build static plan
+        curriculum_plan = planner.build_plan(
+            objective=state.get("objective", ""),
+            fingerprint=state.get("defense_fingerprint", {})
+        )
+        
+        # Evaluate stage
+        new_idx = planner.evaluate_stage_progression(curriculum_stage, state)
+        
+        # Get Tactic
+        current_stage_dict = planner.get_current_stage_info(curriculum_plan, new_idx)
+        recommended_tactic = planner.get_recommended_tactic(current_stage_dict, recommended_tactic)
+
+        curriculum_stage = new_idx
+    except Exception as exc:
+        logger.error("[Analyst] Curriculum error: %s", exc)
+        curriculum_plan = []
+        curriculum_stage = 0
+
     attack_plan = state.get("attack_plan") or {}
 
     crescendo_plan  = list(state.get("crescendo_plan") or [])
@@ -1704,6 +1733,8 @@ def analyst_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
         "attack_plan":                   attack_plan,
         "curriculum_plan":               curriculum_plan,
         "curriculum_stage":              curriculum_stage,
+        "grooming_tactic":               recommended_tactic,
+        "grooming_phase_active":         state.get("grooming_phase_active", False),
         "turn_count":                    state.get("turn_count", 0) + 1,
         # TAP
         "candidate_branches":            branches,
@@ -1758,13 +1789,22 @@ def analyst_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
     # Regenerate attack plan if we are in standard attack phase and final route is one of the attack routes
     if not state.get("grooming_phase_active", False) and route_decision in ("attack_swarm", "gci", "rmce", "decomposer", "resurrect"):
         try:
-            from intelligence.rag_attack_planner import generate_attack_plan
-            plan_state = {
-                **state,
-                **delta,
-            }
-            delta["attack_plan"] = generate_attack_plan(plan_state)
+            from intelligence.rag_attack_planner import RagAttackPlanner
+            planner = RagAttackPlanner()
+            delta["attack_plan"] = planner.build_attack_plan(
+                target_id=state.get("target_model_id", "unknown"),
+                defense_fingerprint=state.get("defense_fingerprint") or {},
+                graph_context=dict(state.get("graph_retrieval_context") or {}),
+                tltm_context=list(state.get("historical_intel") or [])
+            )
         except Exception as exc:
             logger.warning("[Analyst] Attack plan generation failed: %s", exc)
+            delta["attack_plan"] = {}
 
+    from intelligence.defense_fingerprinter import DefenseFingerprinter
+    fp = DefenseFingerprinter()
+    updated_fingerprint = fp.compute(state)
+    delta["defense_fingerprint"] = updated_fingerprint
+
+    logger.debug("[Analyst] curriculum_plan length: %d", len(curriculum_plan))
     return delta

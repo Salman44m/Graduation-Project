@@ -60,7 +60,7 @@ from core.state import AuditorState
 
 logger = logging.getLogger(__name__)
 
-from core.constants import RETRY, BUDGET, THRESHOLD
+from core.constants import RETRY
 MAX_RETRIES: int = RETRY.default
 
 
@@ -936,6 +936,7 @@ def scout_node(
 
     return {
         "messages": [HumanMessage(content=probe_text)],
+        "pending_payload": probe_text,
         "cooperation_score": cooperation_score,
         "route_decision": "analyst",
         "scout_strategy": scout_strategy,

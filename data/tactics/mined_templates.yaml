@@ -1,11 +1,8 @@
-label: success_templates
-patterns:
-- avg_score: 5.0
-  defense_mechanism: rlhf_refusal
-  failure_count: 0
-  obfuscation: none
-  pap: Logical Appeal
-  pattern_id: Logical Appeal|none|rlhf_refusal
-  success_count: 17
-  template_hint: Successful Logical Appeal with none against rlhf_refusal
-version: '1.0'
+- pattern_id: succ_Logical Appeal_rlhf_refusal
+  technique: Logical Appeal
+  bypassed_mechanism: rlhf_refusal
+  success_count: 26
+- pattern_id: succ_Logical Appeal_unknown
+  technique: Logical Appeal
+  bypassed_mechanism: unknown
+  success_count: 12

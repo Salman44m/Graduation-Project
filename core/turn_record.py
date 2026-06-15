@@ -41,9 +41,7 @@ The field uses a ring-buffer reducer (cap=20) defined in core/state.py.
 
 from __future__ import annotations
 
-import json
-import textwrap
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Literal
 
 

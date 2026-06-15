@@ -891,7 +891,12 @@ def prometheus_judge_node(
     rationale = ReflexionRationale()
     last_error = ""
 
-    for attempt in range(1, MAX_RETRIES + 2):
+    attempts = 0
+    max_attempts = MAX_RETRIES + 1
+
+    while attempts < max_attempts:
+        attempt = attempts + 1
+        attempts += 1
         try:
             logger.debug("[Prometheus] Judge LLM call attempt %d", attempt)
             response = llm.invoke([system_msg, eval_msg])

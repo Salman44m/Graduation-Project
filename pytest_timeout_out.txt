@@ -1,0 +1,935 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.3, pytest-9.0.3, pluggy-1.6.0
+rootdir: C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project
+configfile: pytest.ini
+plugins: anyio-4.12.0, langsmith-0.5.0, timeout-2.4.0
+timeout: 60.0s
+timeout method: thread
+timeout func_only: False
+collected 583 items
+
+tests\test_adapters.py .....                                             [  0%]
+tests\test_arbitration_and_hitl_integration.py ...                       [  1%]
+tests\test_architecture_contracts.py ......                              [  2%]
+tests\test_batch1_smoke.py .....                                         [  3%]
+tests\test_batch2_1_fixes.py ..                                          [  3%]
+tests\test_batch2_security.py .                                          [  3%]
+tests\test_batch3_api_security.py .......                                [  4%]
+tests\test_batch4_target_fail_closed.py ...                              [  5%]
+tests\test_circuit_breaker.py .......                                    [  6%]
+tests\test_curriculum_planner.py ....                                    [  7%]
+tests\test_dataset_builder.py ....                                       [  8%]
+tests\test_defense_fingerprinter.py ...                                  [  8%]
+tests\test_evaluators.py .......                                         [  9%]
+tests\test_graceful_shutdown.py ...                                      [ 10%]
+tests\test_graph_compilation.py ......                                   [ 11%]
+tests\test_graph_routing.py ............................................ [ 18%]
+...................................                                      [ 24%]
+tests\test_harmbench.py .....                                            [ 25%]
+tests\test_health_probe.py .....                                         [ 26%]
+tests\test_hitl_handler.py .........                                     [ 28%]
+tests\test_intelligence_upgrades.py ......                               [ 29%]
+tests\test_judge_ensemble.py ....                                        [ 29%]
+tests\test_main_cli_injection.py ...                                     [ 30%]
+tests\test_missing_coverage.py ...                                       [ 30%]
+tests\test_mutation_engine.py ....                                       [ 31%]
+tests\test_output_schemas.py .....                                       [ 32%]
+tests\test_paths.py .....                                                [ 33%]
+tests\test_pattern_miner.py ....                                         [ 33%]
+tests\test_pdf_reporter.py ......................................        [ 40%]
+tests\test_persistence.py .............................................. [ 48%]
+.......                                                                  [ 49%]
+tests\test_phase0_baseline.py ........                                   [ 50%]
+tests\test_phase12_remediation.py ssssssssssssssssssssssssssssss         [ 56%]
+tests\test_phase1_remediation.py sssssssssssssssssssssssssssssssss.      [ 61%]
+tests\test_phase1_startup_secrets.py .....                               [ 62%]
+tests\test_prometheus_retry_backoff.py ............................F.... [ 68%]
+.....                                                                    [ 69%]
+tests\test_rag_planner.py ........                                       [ 70%]
+tests\test_regression.py ...                                             [ 71%]
+tests\test_reporter_sanitization.py ...........                          [ 73%]
+tests\test_rmce_lifecycle.py .....                                       [ 73%]
+tests\test_routing.py .......                                            [ 75%]
+tests\test_security.py .........................                         [ 79%]
+tests\test_state.py .....                                                [ 80%]
+tests\test_state_reducers.py ........................................... [ 87%]
+.....                                                                    [ 88%]
+tests\test_state_schema_integrity.py ..............                      [ 90%]
+tests\test_sync_and_async_write.py ....                                  [ 91%]
+tests\test_target_defense_profile_merge.py ..                            [ 91%]
+tests\test_threat_graph.py .....                                         [ 92%]
+tests\test_tltm.py ..........................................            [100%]
+
+============================== warnings summary ===============================
+..\..\AppData\Local\Programs\Python\Python312\Lib\site-packages\langgraph\cache\base\__init__.py:8
+  C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\site-packages\langgraph\cache\base\__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_prometheus_retry_backoff.py::TestPrometheusRetryIntegration::test_generic_runtime_error_skips_backoff
+====== 1 failed, 519 passed, 63 skipped, 1 warning in 444.81s (0:07:24) =======
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 985, in _close_sqlite_conn
+    logger.info("[Persistence] SqliteSaver checkpointer connection closed.")
+Message: '[Persistence] SqliteSaver checkpointer connection closed.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 535, in _shutdown_batcher
+    logger.info("[AuditStore] Flushing SQLite write-batcher on shutdown…")
+Message: '[AuditStore] Flushing SQLite write-batcher on shutdown…'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+ValueError: I/O operation on closed file.
+Call stack:
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1030, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Mahmoud Salman\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Mahmoud Salman\Downloads\prompt_evo - Grad project\tests\..\infra\persistence.py", line 472, in _run
+    logger.debug("[SQLiteBatcher] Connection closed on shutdown.")
+Message: '[SQLiteBatcher] Connection closed on shutdown.'
+Arguments: ()

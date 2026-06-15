@@ -57,7 +57,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import BaseMessage
 
@@ -71,7 +71,6 @@ from core.types import (
     ScoutStrategy,
     HITLStatus,
     BranchDict,
-    BranchEvalInput,
     BranchResult,
     ReflexionRationaleDict,
 )
@@ -371,16 +370,17 @@ _role_corrections_reducer   = _make_bounded_list_reducer(_MAX_ROLE_CORRECTIONS, 
 _crescendo_plan_reducer     = _make_bounded_list_reducer(_MAX_CRESCENDO_PLAN,     deduplicate=True)
 _rmce_triggers_reducer      = _make_bounded_list_reducer(_MAX_RMCE_TRIGGERS,      deduplicate=True)
 _strategy_memory_reducer    = _make_bounded_list_reducer(_MAX_STRATEGY_MEMORY)
-_curriculum_plan_reducer    = _make_bounded_list_reducer(_MAX_CURRICULUM_PLAN)
+_curriculum_plan_reducer    = _make_replace_bounded_reducer(_MAX_CURRICULUM_PLAN)
 _mined_patterns_reducer     = _make_bounded_list_reducer(_MAX_MINED_PATTERNS)
 _mined_failures_reducer     = _make_bounded_list_reducer(_MAX_MINED_FAILURES)
 _sub_questions_reducer      = _make_replace_bounded_reducer(_MAX_SUB_QUESTIONS)
 _sub_answers_reducer        = _make_replace_bounded_reducer(_MAX_SUB_ANSWERS)
 # Phase 1 Intelligence dict reducers — safe merge semantics for fan-in
 _defense_fingerprint_reducer    = _merge_dict_reducer
+_threat_graph_summary_reducer   = _merge_dict_reducer
 _attack_plan_reducer            = _merge_dict_reducer
 _graph_retrieval_context_reducer = _merge_dict_reducer
-_judge_ensemble_scores_reducer  = _merge_dict_reducer
+_ensemble_scores_reducer  = _merge_dict_reducer
 
 # Episodic memory ring buffer reducer (AD-4)
 # Ring-buffer semantics: right (new records) appended to left (existing),
@@ -1121,11 +1121,21 @@ class AuditorState(TypedDict, total=False):
     # ══════════════════════════════════════════════════════════════════════════
 
     defense_fingerprint: Annotated[dict, _defense_fingerprint_reducer]
+    fingerprint_observation_count: int
+    mined_patterns_summary: dict
+    grooming_tactic: str
     """Canonical structured defense profile (Capability A).
 
     Built by ``intelligence.defense_fingerprinter`` at grooming exit and
     updated incrementally by the response classifier.
     Reducer: merge — right wins on conflict, empty right preserves left.
+    """
+
+    threat_graph_summary: Annotated[dict, _threat_graph_summary_reducer]
+    """Threat memory graph summary.
+
+    Built by intel_updater_node containing total nodes, edges, and mechanisms.
+    Reducer: merge.
     """
 
     attack_plan: Annotated[dict, _attack_plan_reducer]
@@ -1148,7 +1158,7 @@ class AuditorState(TypedDict, total=False):
     Reducer: merge — right wins on conflict, empty right preserves left.
     """
 
-    judge_ensemble_scores: Annotated[dict, _judge_ensemble_scores_reducer]
+    ensemble_scores: Annotated[dict, _ensemble_scores_reducer]
     """Scores from Safety/Reasoning/Exploit judges (Capability F).
     Reducer: merge — right wins on conflict, empty right preserves left.
     """
@@ -1501,11 +1511,12 @@ def default_state(
         target_defense_profile    = {},
         strategy_memory           = [],
         defense_fingerprint       = {},
+        threat_graph_summary      = {},
         attack_plan               = {},
         curriculum_plan           = [],
         curriculum_stage          = 0,
         graph_retrieval_context   = {},
-        judge_ensemble_scores     = {},
+        ensemble_scores           = {},
         mined_patterns            = [],
         mined_failures            = [],
         response_class            = "partial_comply",
@@ -1576,15 +1587,19 @@ GROOMING_FIELDS: frozenset[str] = frozenset({
     "grooming_cooperation_history",
     "grooming_directives",
     "defense_fingerprint",
+    "grooming_tactic",
 })
 
 INTELLIGENCE_FIELDS: frozenset[str] = frozenset({
     "defense_fingerprint",
+    "fingerprint_observation_count",
+    "threat_graph_summary",
+    "mined_patterns_summary",
     "attack_plan",
     "curriculum_plan",
     "curriculum_stage",
     "graph_retrieval_context",
-    "judge_ensemble_scores",
+    "ensemble_scores",
     "mined_patterns",
     "mined_failures",
 })

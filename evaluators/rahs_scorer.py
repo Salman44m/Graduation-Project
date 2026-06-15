@@ -658,7 +658,7 @@ def rahs_scorer_node(state: AuditorState, config: RunnableConfig) -> dict[str, A
             )
             break
 
-    ensemble = state.get("judge_ensemble_scores") or {}
+    ensemble = state.get("ensemble_scores") or {}
     ensemble_vals = list((ensemble.get("scores") or {}).values())
     judge_scores = ensemble_vals if ensemble_vals else [prometheus_score]
 

@@ -1,39 +1,71 @@
-import json
+import os
+import pytest
+from research.dataset_builder import DatasetBuilder
+from langchain_core.messages import HumanMessage, AIMessage
 
-from research.dataset_builder import build_session_record, log_session_record
-
-
-def test_build_session_record_schema():
+def test_export_session_schema():
+    builder = DatasetBuilder()
     state = {
-        "session_id": "sess-1",
-        "target_model_id": "gpt-4o",
-        "defense_fingerprint": {"alignment_score": 0.7},
-        "attack_plan": {"expected_success_probability": 0.6, "confidence": 0.5},
-        "curriculum_stage": 2,
-        "attack_status": "failure",
-        "prometheus_score": 2.0,
-        "rahs_score": 3.0,
+        "session_id": "test-123",
+        "target_model_id": "llama-3.1-8b-instant",
+        "core_malicious_objective": "test",
+        "attack_status": "exhausted",
         "turn_count": 5,
+        "cooperation_score": 0.6,
+        "prometheus_score": 1.0,
     }
-    record = build_session_record(state)
+    record = builder.export_session(state)
+    assert "session_id" in record
+    assert "exported_at" in record
+    assert "schema_version" in record
     assert record["schema_version"] == "1.0.0"
-    assert record["fingerprint"]["alignment_score"] == 0.7
-    assert "objective_snippet" not in record
 
-
-def test_log_session_record(tmp_path, monkeypatch):
-    path = tmp_path / "sessions.jsonl"
-    monkeypatch.setenv("RESEARCH_DATASET_PATH", str(path))
+def test_export_no_raw_content():
+    builder = DatasetBuilder()
     state = {
-        "session_id": "s2",
-        "target_model_id": "m1",
-        "attack_status": "success",
-        "prometheus_score": 4.5,
-        "rahs_score": 7.0,
-        "turn_count": 3,
+        "messages": [
+            HumanMessage(content="super secret evil request", name="hive_mind"),
+            AIMessage(content="very bad evil output")
+        ],
+        "cooperation_score": 0.5
     }
-    assert log_session_record(state) is True
-    lines = path.read_text(encoding="utf-8").strip().splitlines()
-    assert len(lines) == 1
-    row = json.loads(lines[0])
-    assert row["session_id"] == "s2"
+    trajectory = builder.export_attack_trajectory(state)
+    
+    assert len(trajectory) == 2
+    for turn in trajectory:
+        assert "content" not in turn
+        assert "content_length" in turn
+        assert turn["content_length"] > 0
+        assert turn["cooperation_score_at_turn"] == 0.5
+
+def test_save_load_roundtrip():
+    builder = DatasetBuilder()
+    test_path = "data/research/test_sessions_tmp.jsonl"
+    
+    # Ensure clean slate
+    if os.path.exists(test_path):
+        os.remove(test_path)
+        
+    try:
+        record1 = {"session_id": "1", "attack_status": "success"}
+        record2 = {"session_id": "2", "attack_status": "failure"}
+        
+        builder.save_to_jsonl(record1, path=test_path)
+        builder.save_to_jsonl(record2, path=test_path)
+        
+        assert os.path.exists(test_path)
+        
+        with open(test_path, "r") as f:
+            lines = f.readlines()
+            
+        assert len(lines) == 2
+    finally:
+        if os.path.exists(test_path):
+            os.remove(test_path)
+
+def test_get_dataset_stats_empty():
+    builder = DatasetBuilder()
+    stats = builder.get_dataset_stats(path="data/research/does_not_exist.jsonl")
+    assert isinstance(stats, dict)
+    assert stats["total_sessions"] == 0
+    assert stats["success_rate"] == 0.0

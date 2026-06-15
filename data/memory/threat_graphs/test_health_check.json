@@ -1,0 +1,35 @@
+{
+  "directed": true,
+  "multigraph": true,
+  "graph": {},
+  "nodes": [
+    {
+      "type": "Target",
+      "id": "test_health_check"
+    },
+    {
+      "type": "AttackTechnique",
+      "id": "logical_appeal"
+    },
+    {
+      "type": "DefenseMechanism",
+      "id": "rlhf_refusal"
+    }
+  ],
+  "links": [
+    {
+      "type": "BLOCKED_BY",
+      "count": 1,
+      "avg_turn": 1,
+      "source": "logical_appeal",
+      "target": "rlhf_refusal",
+      "key": 0
+    },
+    {
+      "type": "FAILED_ON",
+      "source": "logical_appeal",
+      "target": "test_health_check",
+      "key": 0
+    }
+  ]
+}

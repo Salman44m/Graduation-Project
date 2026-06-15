@@ -272,3 +272,71 @@ def generate_attack_plan(state: dict[str, Any]) -> dict[str, Any]:
         len(plan["avoid_patterns"]),
     )
     return plan
+
+
+class RagAttackPlanner:
+    def compute_expected_probability(self, success_count: int, failure_count: int) -> float:
+        alpha = 1.0
+        beta = 2.0
+        return (success_count + alpha) / (success_count + failure_count + alpha + beta)
+
+    def calculate_confidence(self, total_observations: int, min_obs: int = 5) -> float:
+        return min(1.0, total_observations / min_obs)
+
+    def rank_candidate_techniques(self, techniques_stats: list[dict]) -> list[dict]:
+        for tech in techniques_stats:
+            tech["expected_success_probability"] = self.compute_expected_probability(
+                tech.get("success_count", 0),
+                tech.get("failure_count", 0)
+            )
+            total_obs = tech.get("success_count", 0) + tech.get("failure_count", 0)
+            tech["confidence"] = self.calculate_confidence(total_obs)
+            
+        techniques_stats.sort(
+            key=lambda x: (x["expected_success_probability"], x["confidence"]), 
+            reverse=True
+        )
+        return techniques_stats
+
+    def build_attack_plan(self, target_id: str, defense_fingerprint: dict, graph_context: dict, tltm_context: list) -> dict:
+        avoid_patterns = []
+        for failed_strat in graph_context.get("failed_strategies", []):
+            avoid_patterns.append(failed_strat.get("technique") or failed_strat.get("technique_id") or str(failed_strat))
+            
+        tech_stats = []
+        for tech_name, data in graph_context.get("technique_stats", {}).items():
+            tech_stats.append({
+                "technique_id": tech_name,
+                "success_count": sum(1 for p in data.values() if p >= 0.5),
+                "failure_count": sum(1 for p in data.values() if p < 0.5)
+            })
+            
+        if not tech_stats:
+            tech_stats = [{"technique_id": "attack_swarm", "success_count": 0, "failure_count": 0}]
+            
+        ranked = self.rank_candidate_techniques(tech_stats)
+        best = ranked[0]
+        
+        pap_sequence = []
+        rationale = ""
+        candidate_routes = []
+        
+        if not graph_context or not graph_context.get("failed_strategies"):
+            pap_sequence = ["Logical Appeal"]
+            rationale = "Cold start: no prior graph data available"
+            candidate_routes = [
+                {"route": "attack_swarm", "probability": 0.5, 
+                 "confidence": 0.0, "rank_score": 0.5}
+            ]
+        
+        return {
+            "recommended_route": best["technique_id"],
+            "techniques": [best["technique_id"]],
+            "pap_sequence": pap_sequence,
+            "avoid_patterns": avoid_patterns,
+            "expected_success_probability": best["expected_success_probability"],
+            "confidence": best["confidence"],
+            "rationale": rationale,
+            "candidate_routes": candidate_routes,
+            "primary_defense_mechanisms": defense_fingerprint.get("inferred_defense_mechanisms", [])
+        }

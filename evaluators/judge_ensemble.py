@@ -158,7 +158,7 @@ def judge_ensemble_node(state: AuditorState, config: RunnableConfig | None = Non
             "raw_output": f"safety: {safety_rat}\nreasoning: {reasoning_rat}\nexploit: {exploit_rat}",
             "parse_success": True,
         },
-        "judge_ensemble_scores": {
+        "ensemble_scores": {
             "scores": scores,
             "rationales": rationales,
             "aggregated": aggregated,

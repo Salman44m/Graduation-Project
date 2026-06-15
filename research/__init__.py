@@ -1,1 +1,1 @@
-"""Research utilities — structured session dataset logging."""
+# research/__init__.py

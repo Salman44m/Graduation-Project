@@ -111,7 +111,6 @@ from adapters.base_adapter import (
     AdapterError,
     AdapterTimeoutError,
     BaseTargetAdapter,
-    MockTargetAdapter,
 )
 from core.state import AuditorState
 

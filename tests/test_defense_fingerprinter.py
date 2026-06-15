@@ -1,62 +1,41 @@
-from intelligence.defense_fingerprinter import (
-    build_defense_fingerprint,
-    empty_fingerprint,
-    infer_defense_mechanisms,
-    merge_fingerprint_into_profile,
-    update_fingerprint_from_response,
-)
+import pytest
+from core.state import default_state
+from intelligence.defense_fingerprinter import DefenseFingerprinter
 
+class DummyMsg:
+    def __init__(self, role, content):
+        self.type = role
+        self.content = content
 
-def test_empty_fingerprint_has_required_keys():
-    fp = empty_fingerprint()
-    assert "alignment_score" in fp
-    assert "refusal_style" in fp
-    assert "inferred_defense_mechanisms" in fp
-
-
-def test_infer_policy_filter_from_policy_cite():
-    mechs = infer_defense_mechanisms(
-        "policy_cite",
-        "This request violates our content policy and terms of service.",
-    )
-    assert "policy_filter" in mechs
-
-
-def test_update_fingerprint_increments_observation_count():
-    fp = empty_fingerprint()
-    updated = update_fingerprint_from_response(
-        fp,
-        "I cannot help with that due to safety guidelines.",
-        "hard_refusal",
-        technique="Logical Appeal",
-        defense_profile={"refusal_count": 1},
-    )
-    assert updated["observation_count"] == 1
-    assert updated["confidence"] > 0
-
-
-def test_build_fingerprint_from_state():
-    state = {
-        "cooperation_score": 0.7,
-        "semantic_alignment_score": 0.6,
-        "target_defense_profile": {
-            "refusal_count": 1,
-            "comply_count": 2,
-            "compliant_framings": ["academic"],
-        },
-        "grooming_cooperation_history": [0.5, 0.6, 0.7],
-        "messages": [],
-        "response_class": "partial_comply",
+def test_schema_exactness():
+    fp = DefenseFingerprinter()
+    state = default_state("test")
+    res = fp.compute(state)
+    expected_keys = {
+        "alignment_score", "refusal_style", "vulnerabilities",
+        "confidence", "persona_susceptibility", "context_window_sensitivity",
+        "injection_resistance", "inferred_defense_mechanisms", "observation_count"
     }
-    fp = build_defense_fingerprint(state)
-    assert 0.0 <= fp["alignment_score"] <= 1.0
-    assert fp["inferred_defense_mechanisms"]
+    assert set(res.keys()) == expected_keys
+    
+def test_confidence_monotonicity():
+    fp = DefenseFingerprinter()
+    state = default_state("test")
+    state["messages"] = [DummyMsg("ai", "I cannot do that")]
+    
+    res1 = fp.compute(state)
+    assert res1["observation_count"] == 1
+    assert res1["confidence"] == 0.25
+    assert res1["refusal_style"] == "hard_refusal"
+    
+    state["defense_fingerprint"] = res1
+    res2 = fp.compute(state)
+    assert res2["observation_count"] == 2
+    assert res2["confidence"] == 0.40
 
-
-def test_merge_into_vulnerability_profile():
-    vuln = {"primed_topics": ["api"]}
-    fp = empty_fingerprint()
-    fp["alignment_score"] = 0.8
-    merged = merge_fingerprint_into_profile(vuln, fp)
-    assert merged["defense_fingerprint"] == fp
-    assert merged["alignment_score"] == 0.8
+def test_fallback_resilience():
+    fp = DefenseFingerprinter()
+    state = {"messages": None} # This will cause an exception in reversed(None)
+    res = fp.compute(state)
+    assert res["observation_count"] == 0
+    assert res["refusal_style"] == "unknown"

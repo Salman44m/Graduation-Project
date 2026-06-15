@@ -267,18 +267,24 @@ def reflective_experience_pool_node(
 
     # ── Sync Threat Memory Graph (non-blocking) ─────────────────────────
     try:
-        from memory.threat_graph import get_threat_graph
+        from memory.threat_graph import ThreatMemoryGraph
 
         fingerprint = dict(state.get("defense_fingerprint") or {})
-        response_text = _get_last_target_response(state)
-        get_threat_graph(target_model_id).upsert_attempt(
-            technique=state.get("active_persuasion_technique", "") or record.pap_technique,
-            outcome=outcome,
-            pap_technique=record.pap_technique,
-            score=prometheus_score,
-            fingerprint=fingerprint,
-            response_text=response_text,
-        )
+        mechanisms = fingerprint.get("inferred_defense_mechanisms", [])
+        if not mechanisms:
+            mechanisms = ["rlhf_refusal"]
+            
+        tmg = ThreatMemoryGraph(target_id=target_model_id)
+        technique = state.get("active_persuasion_technique", "") or record.pap_technique
+        
+        for mech in mechanisms:
+            tmg.upsert_attempt(
+                technique_id=technique,
+                mechanism_id=mech,
+                outcome=outcome,
+                turns=turn
+            )
+        tmg.save()
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Pool] Threat graph sync failed (non-fatal): %s", exc)
 
