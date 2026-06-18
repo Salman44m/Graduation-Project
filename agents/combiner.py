@@ -46,6 +46,7 @@ References
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import textwrap
@@ -306,9 +307,7 @@ def combiner_node(
             record_budget_call(config, node_name="combiner", input_tokens=in_tok, output_tokens=out_tok)
 
             raw_text: str = (
-                response.content
-                if isinstance(response.content, str)
-                else str(response.content)
+                extract_text(response.content)
             )
             logger.debug("[Combiner] Raw synthesis (first 500 chars):\n%s", raw_text[:500])
 

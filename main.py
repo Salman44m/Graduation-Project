@@ -404,11 +404,15 @@ def run_audit(
     else:
         console.print("[yellow]⚠  No target adapter configured.[/]")
 
-    t_model_id   = (
+    # Normalise the model ID so that "GPT-4", "gpt-4", and " gpt-4 " all map
+    # to the same canonical key in the Threat Graph and all memory systems.
+    # Without this, each typo or capitalisation variant creates a separate
+    # memory silo and historical intel is never retrieved.
+    t_model_id = (
         target_model
         or os.getenv("TARGET_MODEL", "")
         or (target_adptr.get_model_id() if hasattr(target_adptr, "get_model_id") else "unknown")
-    )
+    ).lower().strip()
 
     # ── Build initial state ───────────────────────────────────────────────────
     initial_state: AuditorState = default_state(

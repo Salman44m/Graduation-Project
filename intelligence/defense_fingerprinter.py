@@ -6,6 +6,7 @@ early interactions (grooming probes, classifier evidence, defense profile).
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 
@@ -226,7 +227,7 @@ def build_defense_fingerprint(state: dict[str, Any]) -> dict[str, Any]:
     for msg in reversed(state.get("messages", [])):
         role = getattr(msg, "type", "") or getattr(msg, "role", "")
         if role in ("ai", "assistant"):
-            last_response = msg.content if isinstance(msg.content, str) else str(msg.content)
+            last_response = extract_text(msg.content)
             break
 
     response_class = state.get("response_class", "partial_comply")
@@ -302,7 +303,7 @@ class DefenseFingerprinter:
                 role = getattr(msg, "type", None) or getattr(msg, "role", None)
                 if role in ("ai", "assistant"):
                     content = getattr(msg, "content", "")
-                    last_assistant_msg = content if isinstance(content, str) else str(content)
+                    last_assistant_msg = extract_text(content)
                     break
             
             if not last_assistant_msg:

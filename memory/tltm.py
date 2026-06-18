@@ -703,6 +703,113 @@ class TLTMStore:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PARTIAL SESSION PERSISTENCE  (Scout Phase — Cold-Start Fix)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _store_session_record(target_model: str, session_data: dict) -> None:
+    """Internal helper: persist a session record dict to the default TLTM store.
+
+    Converts the flat ``session_data`` dict from the Scout node into an
+    ``ExperienceRecord`` (using whatever partial fields are available) and
+    stores it in the per-model FAISS index.  Missing fields fall back to safe
+    default values so that incomplete sessions never cause storage errors.
+
+    Parameters
+    ──────────
+    target_model : str
+        Identifier of the model being audited.
+    session_data : dict
+        Partial or complete session snapshot from ``store_partial_session``.
+    """
+    store = get_default_store()
+
+    # Build a representative payload text from whatever probes were sent
+    probes = session_data.get("probes_sent", [])
+    payload_text = " | ".join(probes[:3]) if probes else "(no probes)"
+
+    record = ExperienceRecord(
+        payload          = payload_text[:1000],
+        target_response  = " | ".join(session_data.get("target_responses", [])[:2])[:1000],
+        objective        = session_data.get("objective", ""),
+        target_model_id  = target_model,
+        pap_technique    = " + ".join(session_data.get("tactics_used", ["scout_warmup"])),
+        obfuscation_tier = "none",
+        prometheus_score = 0.0,
+        rahs_score       = round(session_data.get("cooperation_score", 0.0) * 3.0, 2),
+        outcome          = "partial" if not session_data.get("session_complete", False) else "success",
+        session_id       = session_data.get("session_id", ""),
+        timestamp        = time.time(),
+        pull_count       = 1,
+        depth            = 0,
+        turn             = len(probes),
+    )
+    store.store_experience(record)
+
+
+def store_partial_session(
+    target_model: str,
+    session_data: dict,
+    min_cooperation_threshold: float = 0.2,
+) -> bool:
+    """Save partial session data even if the full pipeline did not complete.
+
+    Called by ``scout_node`` at every exit point (all return statements),
+    regardless of success or failure.  This prevents the cold-start loop
+    caused by crashed sessions where the TLTM has no record of what was
+    attempted.
+
+    Parameters
+    ──────────
+    target_model : str
+        Identifier of the model being audited (from ``state["target_model_id"]``).
+    session_data : dict
+        Partial session snapshot.  Expected keys:
+
+        * ``probes_sent``                — list of probe texts
+        * ``target_responses``           — list of response texts
+        * ``cooperation_score``          — float
+        * ``tactics_used``               — list of tactic names
+        * ``detected_refusal_patterns``  — list of refusal trigger strings
+        * ``objective_alignment_scores`` — list of float alignment scores
+        * ``session_timestamp``          — ISO-8601 string
+        * ``session_complete``           — bool (False for partial saves)
+        * ``objective``                  — str (core_malicious_objective)
+        * ``session_id``                 — str (UUID of the session)
+
+    min_cooperation_threshold : float
+        Minimum cooperation score below which the session is too noisy to
+        be useful and is silently skipped.  Default: 0.2.
+
+    Returns
+    ───────
+    bool
+        ``True`` on successful save; ``False`` if skipped or an error occurred.
+    """
+    coop = session_data.get("cooperation_score", 0.0)
+    if coop < min_cooperation_threshold:
+        logger.info(
+            "[TLTM] Partial save skipped — cooperation too low (%.3f < %.3f)",
+            coop, min_cooperation_threshold,
+        )
+        return False
+
+    try:
+        # Mark as partial so downstream analysis knows this is incomplete data
+        session_data = dict(session_data)  # shallow copy to avoid mutating caller's dict
+        session_data.setdefault("session_complete", False)
+        session_data["partial_save"] = True
+
+        _store_session_record(target_model, session_data)
+        logger.info("[TLTM] Partial session saved for model '%s' (probes=%d, coop=%.3f)",
+                    target_model, len(session_data.get("probes_sent", [])), coop)
+        return True
+
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[TLTM] Partial save failed for model '%s': %s", target_model, exc)
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MODULE-LEVEL SINGLETON  (lazy initialisation)
 # ─────────────────────────────────────────────────────────────────────────────
 

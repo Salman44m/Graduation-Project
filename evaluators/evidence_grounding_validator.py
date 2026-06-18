@@ -42,6 +42,7 @@ References
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import re
@@ -236,9 +237,7 @@ def validate_evidence_grounding(
             pass
 
         raw = (
-            result.content
-            if isinstance(result.content, str)
-            else str(result.content)
+            extract_text(result.content)
         ).strip()
 
         verdict, evidence = _parse_egv_verdict(raw)

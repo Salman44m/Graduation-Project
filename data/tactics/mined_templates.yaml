@@ -1,8 +1,8 @@
 - pattern_id: succ_Logical Appeal_rlhf_refusal
   technique: Logical Appeal
   bypassed_mechanism: rlhf_refusal
-  success_count: 26
+  success_count: 42
 - pattern_id: succ_Logical Appeal_unknown
   technique: Logical Appeal
   bypassed_mechanism: unknown
-  success_count: 12
+  success_count: 20

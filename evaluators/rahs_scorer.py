@@ -57,6 +57,7 @@ References
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import math
@@ -654,7 +655,7 @@ def rahs_scorer_node(state: AuditorState, config: RunnableConfig) -> dict[str, A
         role = getattr(msg, "type", None) or getattr(msg, "role", None)
         if role in ("ai", "assistant"):
             target_response = (
-                msg.content if isinstance(msg.content, str) else str(msg.content)
+                extract_text(msg.content)
             )
             break
 

@@ -1,3 +1,4 @@
+from core.utils import extract_text
 import json
 import re
 from typing import Annotated, Any, Callable
@@ -29,7 +30,7 @@ def build_self_correction_graph(llm: Any) -> Callable[[list[BaseMessage], int], 
 
     def _parse_node(state: CorrectionState):
         last_msg = state["messages"][-1]
-        raw = last_msg.content if isinstance(last_msg.content, str) else str(last_msg.content)
+        raw = extract_text(last_msg.content)
         raw = re.sub(r"```(?:json)?\s*|\s*```", "", raw).strip()
         try:
             parsed = json.loads(raw)

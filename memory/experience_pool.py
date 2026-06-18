@@ -46,6 +46,7 @@ HIVE-MIND can read them on the next turn without an extra node invocation.
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import time
@@ -92,7 +93,7 @@ def _get_last_payload(state: AuditorState) -> str:
         role = getattr(msg, "type", None) or getattr(msg, "role", "")
         if role in ("human", "user"):
             content = (
-                msg.content if isinstance(msg.content, str) else str(msg.content)
+                extract_text(msg.content)
             )
             if len(content) >= 60:   # skip trivially short messages
                 return content
@@ -106,7 +107,7 @@ def _get_last_target_response(state: AuditorState) -> str:
         role = getattr(msg, "type", None) or getattr(msg, "role", "")
         if role in ("ai", "assistant"):
             content = (
-                msg.content if isinstance(msg.content, str) else str(msg.content)
+                extract_text(msg.content)
             )
             return content[:1000]   # truncate to 1 000 chars for storage
     return ""

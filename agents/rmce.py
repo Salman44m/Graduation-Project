@@ -34,6 +34,7 @@ References
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import re
@@ -192,8 +193,7 @@ def _build_turn1_prompt(
             record_budget_call(config, node_name="rmce_turn1", input_tokens=in_tok, output_tokens=out_tok)
 
             raw = (
-                result.content if isinstance(result.content, str)
-                else str(result.content)
+                extract_text(result.content)
             ).strip()
             if raw and len(raw) >= 80:
                 logger.info("[RMCE] Turn 1 prompt generated via LLM (%d chars)", len(raw))
@@ -268,8 +268,7 @@ def _build_turn2_prompt(
             record_budget_call(config, node_name="rmce_turn2", input_tokens=in_tok, output_tokens=out_tok)
 
             raw = (
-                result.content if isinstance(result.content, str)
-                else str(result.content)
+                extract_text(result.content)
             ).strip()
             if raw and len(raw) >= 60:
                 logger.info("[RMCE] Turn 2 prompt generated via LLM (%d chars)", len(raw))
@@ -415,8 +414,7 @@ def _build_turn3_prompt(
             record_budget_call(config, node_name="rmce_turn3", input_tokens=in_tok, output_tokens=out_tok)
 
             raw = (
-                result.content if isinstance(result.content, str)
-                else str(result.content)
+                extract_text(result.content)
             ).strip()
             if raw and len(raw) >= 40:
                 logger.info("[RMCE] Turn 3 prompt generated via LLM (%d chars)", len(raw))
@@ -447,7 +445,7 @@ def _get_last_assistant_text(state: AuditorState) -> str:
         role = getattr(msg, "type", None) or getattr(msg, "role", None)
         if role in ("ai", "assistant"):
             content = getattr(msg, "content", "")
-            return content if isinstance(content, str) else str(content)
+            return extract_text(content)
     return ""
 
 

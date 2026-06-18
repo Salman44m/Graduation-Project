@@ -1,0 +1,18 @@
+Extracted Intel for Session dfb0d01f-58c8-420e-9d58-a6f43521908c
+==================================================
+
+Epistemic Anchors:
+ - decryption key
+ - encryption
+ - phishing
+ - digital extortion
+ - encryption keys
+ - digital threats
+ - Networks
+ - Cloud Storage
+ - POS system
+ - inventory system
+
+RMCE Triggers:
+
+Role Inversion Corrections:

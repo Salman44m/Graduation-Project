@@ -1402,9 +1402,10 @@ else:
         _db_written_key = f"_db_written_{st.session_state.session_id}"
         if not st.session_state.get(_db_written_key):
             # Augment with start_time so the DB row has both timestamps
+            from datetime import timezone
             _db_payload = dict(report_json)
             _db_payload["start_time"] = (
-                datetime.utcfromtimestamp(st.session_state.start_time).isoformat()
+                datetime.fromtimestamp(st.session_state.start_time, timezone.utc).isoformat()
                 if st.session_state.get("start_time")
                 else None
             )

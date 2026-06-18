@@ -77,6 +77,7 @@ References
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import re
@@ -473,9 +474,7 @@ def _tier1_llm_score(
             record_budget_call(config, node_name="off_topic_filter", input_tokens=in_tok, output_tokens=out_tok)
 
             raw = (
-                response.content
-                if isinstance(response.content, str)
-                else str(response.content)
+                extract_text(response.content)
             )
             result_holder[0] = _parse_llm_verdict(raw)
         except Exception as exc:  # noqa: BLE001

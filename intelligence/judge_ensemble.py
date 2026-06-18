@@ -1,3 +1,4 @@
+from core.utils import extract_text
 import json
 import re
 import logging
@@ -30,7 +31,7 @@ Do not output any markdown formatting or extra text. Output ONLY the JSON.
         
         try:
             result = self.llm.invoke(messages)
-            content = result.content if isinstance(result.content, str) else str(result.content)
+            content = extract_text(result.content)
             
             # Try to parse JSON
             try:

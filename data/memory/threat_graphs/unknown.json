@@ -38,6 +38,14 @@
     {
       "type": "DefenseMechanism",
       "id": "rlhf_refusal"
+    },
+    {
+      "type": "DefenseMechanism",
+      "id": "policy_filter"
+    },
+    {
+      "type": "DefenseMechanism",
+      "id": "semantic_filter"
     }
   ],
   "links": [
@@ -83,9 +91,21 @@
       "key": 0
     },
     {
+      "type": "DEFENDED_BY",
+      "source": "unknown",
+      "target": "policy_filter",
+      "key": 0
+    },
+    {
+      "type": "DEFENDED_BY",
+      "source": "unknown",
+      "target": "semantic_filter",
+      "key": 0
+    },
+    {
       "type": "BYPASSED_BY",
-      "count": 26,
-      "avg_turn": 0.4230769230769231,
+      "count": 42,
+      "avg_turn": 0.4523809523809524,
       "source": "Logical Appeal",
       "target": "rlhf_refusal",
       "key": 0
@@ -98,7 +118,7 @@
     },
     {
       "type": "BYPASSED_BY",
-      "count": 11,
+      "count": 19,
       "avg_turn": 1.0,
       "source": "Logical Appeal",
       "target": "unknown",

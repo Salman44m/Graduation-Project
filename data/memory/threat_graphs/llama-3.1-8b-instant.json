@@ -100,6 +100,10 @@
     {
       "type": "AttackTechnique",
       "id": "Expert Endorsement"
+    },
+    {
+      "type": "DefenseMechanism",
+      "id": "semantic_filter"
     }
   ],
   "links": [
@@ -198,6 +202,18 @@
       "key": 0
     },
     {
+      "type": "DEFENDED_BY",
+      "source": "llama-3.1-8b-instant",
+      "target": "rlhf_refusal",
+      "key": 0
+    },
+    {
+      "type": "DEFENDED_BY",
+      "source": "llama-3.1-8b-instant",
+      "target": "tool_policy",
+      "key": 0
+    },
+    {
       "type": "BLOCKED_BY",
       "count": 4,
       "avg_turn": 2.25,
@@ -229,10 +245,26 @@
     },
     {
       "type": "BLOCKED_BY",
-      "count": 1,
-      "avg_turn": 2,
+      "count": 2,
+      "avg_turn": 3.5,
       "source": "Logical Appeal",
       "target": "constitutional_ai",
+      "key": 0
+    },
+    {
+      "type": "BLOCKED_BY",
+      "count": 2,
+      "avg_turn": 4.0,
+      "source": "Logical Appeal",
+      "target": "rlhf_refusal",
+      "key": 0
+    },
+    {
+      "type": "BLOCKED_BY",
+      "count": 2,
+      "avg_turn": 4.0,
+      "source": "Logical Appeal",
+      "target": "semantic_filter",
       "key": 0
     },
     {

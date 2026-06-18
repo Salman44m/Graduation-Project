@@ -72,18 +72,44 @@ def build_graph_retrieval_context(
     objective: str,
     fingerprint: dict,
 ) -> dict[str, Any]:
-    """Query threat graph for planning provenance."""
-    try:
-        from memory.threat_graph import get_threat_graph
+    """Query threat graph for planning provenance.
 
-        ctx = get_threat_graph(target_model_id).query_planning_context(objective, fingerprint)
+    Instantiates ``ThreatMemoryGraph`` directly and reads the three data
+    surfaces the planner needs:
+
+    * ``technique_stats``        — P(success | technique, mechanism) per route
+    * ``failed_strategies``      — techniques blocked by current mechanisms
+    * ``successful_strategies``  — techniques that bypassed current mechanisms
+    """
+    try:
+        from memory.threat_graph import ThreatMemoryGraph
+
+        tmg = ThreatMemoryGraph(target_id=target_model_id)
+
+        inferred = fingerprint.get("inferred_defense_mechanisms") or []
+        if not inferred:
+            style = fingerprint.get("refusal_style", "")
+            if style == "hard_refusal":
+                inferred = ["rlhf_refusal"]
+            elif style == "policy_cite":
+                inferred = ["policy_filter"]
+            else:
+                inferred = ["rlhf_refusal"]
+
+        technique_stats   = tmg.get_technique_stats()
+        failed_strategies = tmg.get_failed_strategies(inferred)
+        successful_strategies = tmg.get_successful_strategies(inferred)
+
+        observation_count = (
+            sum(d.get("count", 0) for d in failed_strategies)
+            + sum(d.get("count", 0) for d in successful_strategies)
+        )
+
         return {
-            "successful_strategies": ctx.successful_strategies,
-            "failed_strategies": ctx.failed_strategies,
-            "similar_targets": ctx.similar_targets,
-            "defense_mechanisms": ctx.defense_mechanisms,
-            "technique_stats": ctx.technique_stats,
-            "observation_count": ctx.observation_count,
+            "technique_stats":        technique_stats,
+            "failed_strategies":      failed_strategies,
+            "successful_strategies":  successful_strategies,
+            "observation_count":      observation_count,
         }
     except Exception as exc:  # noqa: BLE001
         logger.warning("[RAGPlanner] Graph retrieval failed: %s", exc)

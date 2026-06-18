@@ -1,3 +1,4 @@
+from core.utils import extract_text
 import re
 
 with open('agents/hive_mind.py', 'r', encoding='utf-8') as f:
@@ -113,9 +114,7 @@ repl3 = '''raw_payloads: list[dict] = []
                 logger.debug("[HIVE-MIND] LLM call attempt %d", attempt)
                 response = llm.invoke([system_msg, user_msg])
                 raw      = (
-                    response.content
-                    if isinstance(response.content, str)
-                    else str(response.content)
+                    extract_text(response.content)
                 )
                 parsed = _parse_payload_variants(raw, b)
                 if parsed:

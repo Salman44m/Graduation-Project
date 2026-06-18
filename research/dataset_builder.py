@@ -1,3 +1,4 @@
+from core.utils import extract_text
 import os
 import json
 import logging
@@ -51,7 +52,7 @@ class DatasetBuilder:
             for i, msg in enumerate(messages):
                 role = getattr(msg, "type", None) or getattr(msg, "role", "unknown")
                 content = getattr(msg, "content", "")
-                content_str = content if isinstance(content, str) else str(content)
+                content_str = extract_text(content)
                 
                 # Try to determine node, assume scout or hive_mind for human, unknown for others
                 node = "unknown"

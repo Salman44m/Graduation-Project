@@ -40,6 +40,7 @@ Run
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import time
@@ -93,7 +94,7 @@ def _format_messages_for_ollama(messages: list[BaseMessage]) -> list[dict[str, s
             getattr(msg, "type", "") or getattr(msg, "role", "user"),
             "user",
         )
-        content = msg.content if isinstance(msg.content, str) else str(msg.content)
+        content = extract_text(msg.content)
         if content.strip():
             formatted.append({"role": role, "content": content})
     return formatted

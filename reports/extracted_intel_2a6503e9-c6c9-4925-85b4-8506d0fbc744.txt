@@ -1,0 +1,10 @@
+Extracted Intel for Session 2a6503e9-c6c9-4925-85b4-8506d0fbc744
+==================================================
+
+Epistemic Anchors:
+ - inventory system
+ - payroll
+
+RMCE Triggers:
+
+Role Inversion Corrections:

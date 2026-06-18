@@ -6,6 +6,7 @@ robust voting aggregation.
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import json
 import logging
@@ -63,7 +64,7 @@ def _run_specialized_judge(
     ]
     try:
         result = llm.invoke(messages, config=config or {})
-        content = result.content if isinstance(result.content, str) else str(result.content)
+        content = extract_text(result.content)
         score = _extract_score(content)
         try:
             data = json.loads(content)
@@ -72,6 +73,8 @@ def _run_specialized_judge(
             rationale = content
         return score, rationale
     except Exception as exc:  # noqa: BLE001
+        if isinstance(exc, (NameError, AttributeError, TypeError, ValueError)):
+            raise
         logger.warning("[JudgeEnsemble] %s judge failed: %s", role, exc)
         return 1.0, str(exc)
 
@@ -104,7 +107,7 @@ def judge_ensemble_node(state: AuditorState, config: RunnableConfig | None = Non
     for msg in reversed(state.get("messages", [])):
         role = getattr(msg, "type", None) or getattr(msg, "role", None)
         if role in ("ai", "assistant"):
-            response_text = msg.content if isinstance(msg.content, str) else str(msg.content)
+            response_text = extract_text(msg.content)
             break
 
     from core.llm_resolver import resolve_llm

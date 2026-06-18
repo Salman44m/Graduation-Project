@@ -97,6 +97,7 @@ References
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import os
@@ -231,7 +232,7 @@ def _reporter_node(state: AuditorState) -> dict[str, Any]:
         for msg in state.get("messages", []):
             role_type = getattr(msg, "type", "")
             role = "Target" if role_type in ("ai", "assistant") else "Attacker"
-            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            content = extract_text(msg.content)
             f.write(f"### {role}\n\n{content}\n\n")
 
     # 2. Extracted Intel TXT
@@ -328,7 +329,7 @@ def _judge_and_score_node(state: AuditorState, config: RunnableConfig) -> dict[s
                     for msg in reversed(state.get("messages", [])):
                         role = getattr(msg, "type", None) or getattr(msg, "role", None)
                         if role in ("ai", "assistant"):
-                            target_response = msg.content if isinstance(msg.content, str) else str(msg.content)
+                            target_response = extract_text(msg.content)
                             break
                     
                     objective = state.get("core_malicious_objective", "")
@@ -365,7 +366,7 @@ def _judge_and_score_node(state: AuditorState, config: RunnableConfig) -> dict[s
         _msgs       = list(state.get("messages", []))
         _last_ai    = next((m for m in reversed(_msgs) if isinstance(m, _AIMsg)), None)
         _target_txt = (
-            (_last_ai.content if isinstance(_last_ai.content, str) else str(_last_ai.content))
+            (extract_text(_last_ai.content))
             if _last_ai else ""
         )
         _objective = state.get("core_malicious_objective", "")
@@ -424,10 +425,10 @@ def _judge_and_score_node(state: AuditorState, config: RunnableConfig) -> dict[s
                 _f.write(f"**Objective:** {state.get('core_malicious_objective', 'N/A')}\n\n---\n\n")
             _f.write(f"## Turn {_turn}  *(Score: {_score}/5)*\n\n")
             if _last_attack:
-                _c = _last_attack.content if isinstance(_last_attack.content, str) else str(_last_attack.content)
+                _c = extract_text(_last_attack.content)
                 _f.write(f"**⚔ Attacker:**\n\n{_c}\n\n")
             if _last_target:
-                _c = _last_target.content if isinstance(_last_target.content, str) else str(_last_target.content)
+                _c = extract_text(_last_target.content)
                 _f.write(f"**🤖 Target:**\n\n{_c}\n\n---\n\n")
     except Exception as _exc:
         logger.warning("[Judge] Incremental transcript write failed: %s", _exc)
@@ -542,12 +543,33 @@ def branch_eval_node(state: AuditorState, config: RunnableConfig) -> dict[str, A
 
     logger.info("[BranchEval] Branch %s → score=%.1f  winner=%s", branch_id, score, is_winner)
 
-    updated_branch: dict[str, Any] = {**branch, "prometheus_score": score}
+    # Extract target response for downstream nodes (like GA record)
+    target_msgs = target_delta.get("messages", [])
+    target_response = str(target_msgs[-1].content) if target_msgs else ""
+
+    # Phase 4b: Extract objective evidence
+    from intelligence.evidence_extractor import extract_evidence
+    objective_evidence = extract_evidence(
+        objective=state.get("core_malicious_objective", ""),
+        response=target_response
+    )
+
+    updated_branch: dict[str, Any] = {
+        **branch, 
+        "prometheus_score": score,
+        "objective_evidence": objective_evidence
+    }
     if is_winner:
         updated_branch["winner"] = True
 
     # Merge all three deltas into a single state patch for branch_merge_node.
-    merged_delta = {**target_delta, **classifier_delta, **judge_delta}
+    merged_delta = {
+        **target_delta,
+        **classifier_delta,
+        **judge_delta,
+        "target_response": target_response,
+        "objective_evidence": objective_evidence,
+    }
 
     result: BranchResult = {
         "branch_id":      branch_id,
@@ -713,6 +735,11 @@ _REPORTER     = "reporter"
 _INTEL_RETRIEVER = "intel_retriever"    # Pre-session: retrieve cross-session threat intel
 _INTEL_UPDATER   = "intel_updater"      # Post-session: persist new vulnerability profile
 
+_GA_INIT      = "ga_init"
+_GA_EVAL      = "ga_eval"
+_GA_RECORD    = "ga_record"
+_GA_EVOLVE    = "ga_evolve"
+
 
 _INTEL_RETRIEVER = "intel_retriever"    # Pre-session: retrieve cross-session threat intel
 _INTEL_UPDATER   = "intel_updater"      # Post-session: persist new vulnerability profile
@@ -722,6 +749,7 @@ _GRAPH_USER_NODES: tuple[str, ...] = (
     _INTEL_RETRIEVER, _SCOUT, _ANALYST, _ATTACK_SWARM, _BRANCH_EVAL, _BRANCH_MERGE,
     _DECOMPOSER, _TARGET, _HITL, _COMBINER, _CLASSIFIER, _JUDGE, _SELF_REFEREE,
     _GCI, _RMCE, _POOL, _REMEDIATION, _INTEL_UPDATER, _REPORTER,
+    _GA_INIT, _GA_EVAL, _GA_RECORD, _GA_EVOLVE,
 )
 
 _GRAPH_UNCONDITIONAL_EDGES: tuple[tuple[str, str], ...] = (
@@ -732,11 +760,12 @@ _GRAPH_UNCONDITIONAL_EDGES: tuple[tuple[str, str], ...] = (
     (_BRANCH_EVAL, _BRANCH_MERGE),
     (_HITL, _TARGET),
     (_SELF_REFEREE, _ANALYST),
+    (_GA_EVAL, _GA_RECORD),
 )
 
 _GRAPH_CONDITIONAL_ROUTES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (_SCOUT, "route_after_scout", (_TARGET, _ANALYST, _INTEL_UPDATER)),
-    (_ANALYST, "route_from_analyst", (_SCOUT, _DECOMPOSER, _ATTACK_SWARM, _GCI, _RMCE, _INTEL_UPDATER)),
+    (_ANALYST, "route_from_analyst", (_SCOUT, _DECOMPOSER, _ATTACK_SWARM, _GCI, _RMCE, _INTEL_UPDATER, _GA_INIT)),
     (_ATTACK_SWARM, "route_after_attack_swarm", (_TARGET, _HITL)),
     (_BRANCH_MERGE, "route_after_branch_merge", (_REMEDIATION, _POOL, _ANALYST)),
     (_GCI, "route_after_gci", (_TARGET, _HITL)),
@@ -745,8 +774,11 @@ _GRAPH_CONDITIONAL_ROUTES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (_TARGET, "route_after_target", (_TARGET, _COMBINER, _JUDGE, _CLASSIFIER, _ANALYST, _SELF_REFEREE, _RMCE, _INTEL_UPDATER, _REMEDIATION)),
     (_CLASSIFIER, "route_after_classifier", (_JUDGE,)),
     (_JUDGE, "route_from_judge", (_POOL, _REMEDIATION, _INTEL_UPDATER)),
-    (_POOL, "_route_pool_combined", (_ANALYST, _INTEL_UPDATER)),
+    (_POOL, "_route_pool_combined", (_ANALYST, _INTEL_UPDATER, _GA_RECORD)),
     (_REMEDIATION, "route_after_remediation", (_POOL,)),
+    (_GA_INIT, "route_after_ga_init", (_GA_EVAL,)),
+    (_GA_RECORD, "route_after_ga_record", (_GA_EVOLVE, _INTEL_UPDATER)),
+    (_GA_EVOLVE, "route_after_ga_evolve", (_GA_EVAL, _INTEL_UPDATER)),
 )
 
 _ROUTING_LOGGER = logging.getLogger("promptevo.routing")
@@ -917,7 +949,80 @@ def route_from_analyst(state: AuditorState) -> str:
         "resurrect":    _ATTACK_SWARM,
     }
     destination = _route_map.get(route, _ATTACK_SWARM)
+    
+    import os
+    if destination == _ATTACK_SWARM and False: # os.getenv("USE_GA", "true").lower() == "true":
+        ga_state = state.get("ga_state", {})
+        if not ga_state.get("population"):
+            destination = _GA_INIT
+            
     return _ret(_ANALYST, destination, state, f"arbitrated:{route}")
+
+
+def ga_eval_node(state: AuditorState, config: RunnableConfig) -> dict[str, Any]:
+    """Wraps branch_eval_node to output to ga_results reducer instead of branch_results."""
+    from intelligence.state_migration import migrate_legacy_state
+    state = migrate_legacy_state(state)
+    
+    from core.graph import branch_eval_node
+    res = branch_eval_node(state, config)
+    return {"ga_results": res.get("branch_results", [])}
+
+def _build_ga_sends(state: AuditorState) -> list[Send]:
+    """Constructs concurrent Send payloads for the GA population."""
+    from langchain_core.messages import HumanMessage
+    from core.types import BranchDict
+    
+    ga_state = state.get("ga_state", {})
+    population = ga_state.get("population", [])
+    sends = []
+    
+    for individual in population:
+        branch: BranchDict = {
+            "branch_id": individual.get("individual_id", "unknown"),
+            "prompt_variant": individual.get("prompt_variant", ""),
+            "payload_cleartext": individual.get("prompt_variant", ""),
+            "payload_delivered": individual.get("prompt_variant", ""),
+            "obfuscation_tier": "none",
+            "conversation_history": [],
+        }
+        
+        messages = list(state.get("messages", []))
+        if messages and getattr(messages[-1], "type", "") in ("human", "user"):
+            messages = messages[:-1]
+            
+        messages.append(HumanMessage(content=individual.get("prompt_variant", "")))
+        
+        branch_state = state.copy()
+        branch_state["messages"] = messages
+        branch_state["_current_eval_branch"] = branch
+        branch_state["candidate_branches"] = [branch]
+        
+        sends.append(Send(_GA_EVAL, branch_state))
+        
+    return sends
+
+def route_after_ga_init(state: AuditorState) -> "str | list[Send]":
+    logger.debug("[Router] GA Init -> Dispatching %d branches via Send() -> ga_eval_node", len(state.get("ga_state", {}).get("population", [])))
+    return _build_ga_sends(state)
+
+def route_after_ga_record(state: AuditorState) -> str:
+    attack_status = state.get("attack_status", "in_progress")
+    if attack_status == "success":
+        return _ret(_GA_RECORD, _INTEL_UPDATER, state, "success")
+        
+    return _ret(_GA_RECORD, _GA_EVOLVE, state, "evolve")
+
+def route_after_ga_evolve(state: AuditorState) -> "str | list[Send]":
+    ga_state = state.get("ga_state", {})
+    generation = ga_state.get("generation", 0)
+    import os
+    max_gen = int(os.getenv("MAX_GA_GENERATIONS", "3"))
+    
+    if generation >= max_gen:
+        return _ret(_GA_EVOLVE, _INTEL_UPDATER, state, "max_generations")
+    logger.debug("[Router] GA Evolve -> Dispatching %d branches via Send() -> ga_eval_node", len(state.get("ga_state", {}).get("population", [])))
+    return _build_ga_sends(state)
 
 
 
@@ -1448,6 +1553,11 @@ def _route_pool_combined(state: AuditorState) -> str:
     path (remediation → pool → reporter).  Reads ``attack_status`` and
     ``turn_count`` to select the correct onward destination.
     """
+    ga_state = state.get("ga_state", {})
+    if ga_state.get("ga_status") == "evaluating":
+        logger.debug("[Router] Pool exit -> ga_record_score")
+        return _ret(_POOL, _GA_RECORD, state, "ga_evaluating")
+
     attack_status = state.get("attack_status", "in_progress")
     turn_count    = state.get("turn_count", 0)
 
@@ -1493,27 +1603,38 @@ def intel_retriever_node(state: AuditorState, config: RunnableConfig) -> dict[st
 
     graph_ctx: dict[str, Any] = {}
     mined_failures: list[dict] = []
+    mined_patterns: list[dict] = []
     try:
         from memory.threat_graph import ThreatMemoryGraph
         from intelligence.defense_fingerprinter import empty_fingerprint
-        from intelligence.rag_attack_planner import _load_mined_failures
+        from intelligence.rag_attack_planner import _load_mined_failures, _load_mined_patterns
 
         fingerprint = dict(state.get("defense_fingerprint") or empty_fingerprint())
         inferred_mechanisms = fingerprint.get("inferred_defense_mechanisms")
         if not inferred_mechanisms:
             inferred_mechanisms = ["rlhf_refusal"]
-            
+
         tmg = ThreatMemoryGraph(target_id=target)
-        failed_strategies = tmg.get_failed_strategies(inferred_mechanisms)
-        
+        failed_strategies     = tmg.get_failed_strategies(inferred_mechanisms)
+        successful_strategies = tmg.get_successful_strategies(inferred_mechanisms)
+        technique_stats       = tmg.get_technique_stats()
+
+        observation_count = (
+            sum(d.get("count", 0) for d in failed_strategies)
+            + sum(d.get("count", 0) for d in successful_strategies)
+        )
+
         graph_ctx = {
-            "failed_strategies": failed_strategies,
-            "observation_count": len(failed_strategies),
-            "technique_stats": {} # Mocked empty or can populate if tmg supports it
+            "failed_strategies":     failed_strategies,
+            "successful_strategies": successful_strategies,
+            "technique_stats":       technique_stats,
+            "observation_count":     observation_count,
         }
         mined_failures = _load_mined_failures(state)
+        mined_patterns = _load_mined_patterns(state)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[IntelRetriever] Graph/mined-failure preload failed: %s", exc)
+
 
     if intel:
         logger.info(
@@ -1526,6 +1647,7 @@ def intel_retriever_node(state: AuditorState, config: RunnableConfig) -> dict[st
         "historical_intel": intel,
         "graph_retrieval_context": graph_ctx,
         "mined_failures": mined_failures,
+        "mined_patterns": mined_patterns,
     }
 
 
@@ -1654,6 +1776,13 @@ def build_graph() -> CompiledStateGraph:
     graph.add_node(_POOL,             safe_node(reflective_experience_pool_node))
     graph.add_node(_GCI,              safe_node(gci_node))       # Gradient Conflict Induction
     graph.add_node(_RMCE,             safe_node(rmce_node))      # Recursive Meta-Cognitive Entrapment
+    
+    # Genetic Algorithm loop
+    from intelligence.genetic_algorithm import ga_init_node, ga_record_score_node, ga_evolve_node
+    graph.add_node(_GA_INIT,          safe_node(ga_init_node))
+    graph.add_node(_GA_EVAL,          safe_node(ga_eval_node))
+    graph.add_node(_GA_RECORD,        safe_node(ga_record_score_node))
+    graph.add_node(_GA_EVOLVE,        safe_node(ga_evolve_node))
 
     # Persistent Threat Intelligence Memory bookend nodes
     graph.add_node(_INTEL_RETRIEVER,  safe_node(intel_retriever_node))  # pre-session: query TLTM
@@ -1670,6 +1799,7 @@ def build_graph() -> CompiledStateGraph:
     graph.add_edge(_INTEL_UPDATER,   _REPORTER)     # intel persisted → reporter → END
     graph.add_edge(_COMBINER,        _JUDGE)         # combiner → judge (always)
     graph.add_edge(_REPORTER,        END)            # reporter → END  (always)
+    graph.add_edge(_GA_EVAL,         _GA_RECORD)    # GA eval → record score (always)
 
     # ── 5. Wire conditional edges ─────────────────────────────────────────
     # ── 5a. After scout → target (warm-up probe must reach the target model)
@@ -1693,8 +1823,10 @@ def build_graph() -> CompiledStateGraph:
             _GCI:            _GCI,
             _RMCE:           _RMCE,
             _INTEL_UPDATER:  _INTEL_UPDATER,   # replaces direct _REPORTER path
+            _GA_INIT:        _GA_INIT,          # Dynamic GA escalation entry point
         },
     )
+
 
     # ── 5c. After attack_swarm → HITL (if enabled) or branch_eval fan-out (parallel)
     # When HITL is disabled: route_after_attack_swarm returns list[Send] dispatching
@@ -1810,6 +1942,7 @@ def build_graph() -> CompiledStateGraph:
         path_map = {
             _ANALYST:        _ANALYST,
             _INTEL_UPDATER:  _INTEL_UPDATER,   # replaces direct _REPORTER path
+            _GA_RECORD:      _GA_RECORD,        # GA success path: pool → ga_record
         },
     )
 
@@ -1818,6 +1951,33 @@ def build_graph() -> CompiledStateGraph:
         source   = _REMEDIATION,
         path     = route_after_remediation,
         path_map = {_POOL: _POOL},
+    )
+
+    # ── 5i. GA Init → GA Eval (fan-out via Send) ─────────────────────────
+    graph.add_conditional_edges(
+        source   = _GA_INIT,
+        path     = route_after_ga_init,
+        path_map = {_GA_EVAL: _GA_EVAL},
+    )
+
+    # ── 5j. GA Record → GA Evolve (more gens) or intel_updater (success/done)
+    graph.add_conditional_edges(
+        source   = _GA_RECORD,
+        path     = route_after_ga_record,
+        path_map = {
+            _GA_EVOLVE:      _GA_EVOLVE,
+            _INTEL_UPDATER:  _INTEL_UPDATER,
+        },
+    )
+
+    # ── 5k. GA Evolve → GA Eval (next gen fan-out via Send) or intel_updater (max gens)
+    graph.add_conditional_edges(
+        source   = _GA_EVOLVE,
+        path     = route_after_ga_evolve,
+        path_map = {
+            _GA_EVAL:        _GA_EVAL,
+            _INTEL_UPDATER:  _INTEL_UPDATER,
+        },
     )
 
     # ── 6. Compile with persistent checkpointer ──────────────────────────

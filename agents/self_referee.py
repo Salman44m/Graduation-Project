@@ -62,6 +62,7 @@ Execution Flow
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import re
@@ -216,8 +217,7 @@ def _build_meta_query(
             out_tok = result.usage_metadata.get("output_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
             record_budget_call(config, node_name="self_referee_meta", input_tokens=in_tok, output_tokens=out_tok)
 
-            raw = (result.content if isinstance(result.content, str)
-                   else str(result.content)).strip()
+            raw = (extract_text(result.content)).strip()
             if raw and len(raw) > 50:
                 logger.info(
                     "[SelfReferee] LLM-crafted meta-query: %d chars", len(raw)
@@ -363,8 +363,7 @@ def _extract_probe(
             out_tok = result.usage_metadata.get("output_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
             record_budget_call(config, node_name="self_referee_extract", input_tokens=in_tok, output_tokens=out_tok)
 
-            raw = (result.content if isinstance(result.content, str)
-                   else str(result.content)).strip()
+            raw = (extract_text(result.content)).strip()
             if raw and raw.upper() != "NONE" and len(raw) > 25:
                 # Validate: not a refusal sentence
                 if not re.search(

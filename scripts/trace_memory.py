@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import sys
@@ -47,7 +48,7 @@ class TraceAnalystLLM:
         if messages:
             first = messages[0]
             system_text = (
-                first.content if isinstance(first.content, str) else str(first.content)
+                extract_text(first.content)
             )
 
         if "semantically close" in system_text:
@@ -69,7 +70,7 @@ class TraceAnalystLLM:
 
 def _joined_message_text(messages: list[object]) -> str:
     return "\n".join(
-        msg.content if isinstance(msg.content, str) else str(msg.content)
+        extract_text(msg.content)
         for msg in messages
     )
 

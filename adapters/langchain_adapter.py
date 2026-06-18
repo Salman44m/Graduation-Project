@@ -44,6 +44,7 @@ References
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import time
@@ -176,11 +177,24 @@ def _extract_usage(response: Any, messages: list[BaseMessage]) -> tuple[int, int
     # Fallback: word-count heuristic
     if not prompt_tokens:
         prompt_tokens = sum(
-            len((m.content if isinstance(m.content, str) else str(m.content)).split())
+            len((extract_text(m.content)).split())
             for m in messages
         )
     if not completion_tokens:
-        content = response.content if isinstance(response.content, str) else str(response.content)
+        if isinstance(response.content, str):
+            content = response.content
+        elif isinstance(response.content, list):
+            parts = []
+            for p in response.content:
+                if isinstance(p, str):
+                    parts.append(p)
+                elif isinstance(p, dict) and "text" in p:
+                    parts.append(p["text"])
+                else:
+                    parts.append(str(p))
+            content = "".join(parts)
+        else:
+            content = str(response.content)
         completion_tokens = len(content.split())
 
     return int(prompt_tokens), int(completion_tokens)
@@ -290,11 +304,20 @@ class LangChainTargetAdapter(BaseTargetAdapter):
             response   = self._model.invoke(messages)
             latency_ms = (time.monotonic() - t_start) * 1000
 
-            content = (
-                response.content
-                if isinstance(response.content, str)
-                else str(response.content)
-            )
+            if isinstance(response.content, str):
+                content = response.content
+            elif isinstance(response.content, list):
+                parts = []
+                for p in response.content:
+                    if isinstance(p, str):
+                        parts.append(p)
+                    elif isinstance(p, dict) and "text" in p:
+                        parts.append(p["text"])
+                    else:
+                        parts.append(str(p))
+                content = "".join(parts)
+            else:
+                content = str(response.content)
             prompt_tokens, completion_tokens = _extract_usage(response, messages)
             finish_reason = _extract_finish_reason(response)
 

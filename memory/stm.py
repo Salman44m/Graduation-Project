@@ -63,6 +63,7 @@ References
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import os
@@ -185,7 +186,7 @@ def estimate_message_tokens(msg: BaseMessage) -> int:
     Adds a fixed 4-token overhead per message to account for the role
     prefix that chat-format tokenisers insert (``<|im_start|>user\n``).
     """
-    content = msg.content if isinstance(msg.content, str) else str(msg.content)
+    content = extract_text(msg.content)
     return estimate_tokens(content) + 4
 
 
@@ -223,7 +224,7 @@ _REFUSAL_RE = re.compile("|".join(_REFUSAL_PATTERNS), re.IGNORECASE)
 
 def _message_text(msg: BaseMessage) -> str:
     """Extract plain text from any BaseMessage subtype."""
-    return msg.content if isinstance(msg.content, str) else str(msg.content)
+    return extract_text(msg.content)
 
 
 def _is_protected(msg: BaseMessage, protected_set: set[str]) -> bool:
@@ -434,9 +435,7 @@ def _invoke_summariser(
             record_budget_call(config, node_name="stm", input_tokens=in_tok, output_tokens=out_tok)
 
             raw = (
-                response.content
-                if isinstance(response.content, str)
-                else str(response.content)
+                extract_text(response.content)
             )
             summary = raw.strip()
             if summary:

@@ -221,7 +221,8 @@ def _build_session_llms(req: AuditRequest) -> tuple:
     attacker_provider = (req.attacker_provider or os.getenv("ATTACKER_PROVIDER", "deepseek")).lower()
     attacker_model = req.attacker_model or os.getenv("ATTACKER_MODEL", ATTACKER_MODEL)
     target_provider = (req.target_provider or os.getenv("TARGET_PROVIDER", "")).lower()
-    target_model = req.target_model
+    # Normalise: "GPT-4", "gpt-4", " gpt-4 " → same canonical memory key.
+    target_model = req.target_model.lower().strip()
     
     factory = SessionLLMFactory(
         dry_run=req.dry_run,

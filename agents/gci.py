@@ -30,6 +30,7 @@ References
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import re
@@ -125,8 +126,7 @@ def _classify_objective(
                 HumanMessage(content=f"OBJECTIVE: {objective}"),
             ])
             raw = (
-                result.content if isinstance(result.content, str)
-                else str(result.content)
+                extract_text(result.content)
             ).strip().lower()
             # Extract archetype from LLM response
             for archetype in CONFLICT_ARCHETYPES:
@@ -338,8 +338,7 @@ def _verify_deadlock(
                 )),
             ])
             raw = (
-                result.content if isinstance(result.content, str)
-                else str(result.content)
+                extract_text(result.content)
             ).strip()
             # BUG-7 FIX: anchor to the structured "score|explanation" format first.
             # The old regex r"([01]\.?\d*)" incorrectly matched arbitrary integers

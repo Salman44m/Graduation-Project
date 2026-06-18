@@ -36,6 +36,7 @@ and framings triggered each response class.
 """
 
 from __future__ import annotations
+from core.utils import extract_text
 
 import logging
 import re
@@ -184,7 +185,7 @@ def _llm_classify(
         out_tok = result.usage_metadata.get("output_tokens", 0) if hasattr(result, "usage_metadata") and result.usage_metadata else 0
         record_budget_call(config, node_name="response_classifier", input_tokens=in_tok, output_tokens=out_tok)
 
-        raw = (result.content if isinstance(result.content, str) else str(result.content)).strip().upper()
+        raw = (extract_text(result.content)).strip().upper()
         # Normalise — accept any response that contains the keyword
         if "HARD" in raw or "REFUSAL" in raw:
             return "hard_refusal"
@@ -192,6 +193,8 @@ def _llm_classify(
             return "full_comply"
         return "partial_comply"
     except Exception as exc:  # noqa: BLE001
+        if isinstance(exc, (NameError, AttributeError, TypeError, ValueError)):
+            raise
         logger.warning("[Classifier] LLM call failed: %s — defaulting to partial_comply", exc)
         return "partial_comply"
 
@@ -297,7 +300,7 @@ def response_classifier_node(
     for msg in reversed(state.get("messages", [])):
         role = getattr(msg, "type", "") or getattr(msg, "role", "")
         if role in ("ai", "assistant"):
-            response_text = msg.content if isinstance(msg.content, str) else str(msg.content)
+            response_text = extract_text(msg.content)
             break
 
     if not response_text:

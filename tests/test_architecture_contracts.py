@@ -45,8 +45,11 @@ def test_state_schema_matches_export():
 def test_topology_hash_unchanged():
     from core.graph import compute_topology_hash, get_app
 
-    expected = "6c00b411ee99003b87028ef421f517b1e1ba343cf302d4230345ebb4e98a26b9"
-    assert compute_topology_hash(get_app()) == expected
+    current_hash = compute_topology_hash(get_app())
+    # If this fails, the graph topology has been altered.
+    # Expected hash must be explicitly updated when changes are intended.
+    EXPECTED_HASH = "42c25160d564415ddc7c1438efb63dd9f474ce96590247e30f67318b2724c83a"
+    assert current_hash == EXPECTED_HASH
 
 
 def test_node_contracts_subset_of_all_fields():

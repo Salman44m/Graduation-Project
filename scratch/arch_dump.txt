@@ -1,0 +1,479 @@
+--- core\circuit_breaker.py ---
+Class: CircuitState
+  Methods: 
+Class: ProviderCircuitBreaker
+  Doc: A circuit breaker protecting a specific LLM provider.
+  Methods: __init__, allow_request, record_success, record_failure
+Class: CircuitBreakerRunnable
+  Doc: A LangChain Runnable wrapper that integrates the Circuit Breaker.
+  Methods: __init__, invoke
+Functions: get_circuit_breaker
+
+--- core\constants.py ---
+Class: RetryConfig
+  Doc: LLM retry parameters for all node types.
+
+All agent and evaluator modules that previously defined th
+  Methods: 
+Class: ThresholdConfig
+  Doc: Scoring and routing thresholds used across the graph and evaluators.
+
+Attributes
+──────────
+off_topi
+  Methods: 
+Class: BudgetLimits
+  Doc: Static session budget limits — the ceilings that SessionBudget enforces.
+
+Attributes
+──────────
+max_
+  Methods: 
+Class: SessionBudget
+  Doc: Per-session LLM call budget tracker.
+
+Injected into the LangGraph config alongside the LLM instances
+  Methods: record_call, is_exhausted, remaining_calls, elapsed_secs, summary
+Class: SessionMetrics
+  Doc: Passive per-session metrics collector — never gates execution.
+
+Thread-safe counters and a bounded r
+  Methods: __post_init__, record_node_execution, record_exception, record_route, record_graph_query, record_plan_generation, record_judge_agreement, summary
+
+--- core\context_window.py ---
+Functions: get_evaluator_context
+
+--- core\graph.py ---
+Functions: _sanitize_session_id, _reporter_node, _judge_and_score_node, branch_eval_node, _merge_target_defense_profiles, branch_merge_node, _format_route_dest, _log_routing_decision, _ret, _metrics_from_config, safe_node, route_after_scout, route_from_analyst, ga_eval_node, _build_ga_sends, route_after_ga_init, route_after_ga_record, route_after_ga_evolve, set_cli_mode, hitl_node, route_after_attack_swarm, route_after_gci, route_after_branch_merge, route_after_rmce, route_after_classifier, route_after_target_decomposition, route_after_target_warmup, route_after_target_attack, route_after_target, route_from_combiner, route_from_judge, route_after_pool_on_fail, route_after_remediation, route_after_pool_on_success, _route_pool_combined, intel_retriever_node, intel_updater_node, build_graph, get_app, get_topology_spec, compute_topology_hash, get_graph_ascii, get_node_names, get_routing_config
+
+--- core\llm_factory.py ---
+Class: Provider
+  Methods: 
+Class: LLMFactoryError
+  Doc: Raised when LLM instantiation fails due to missing keys or unknown providers.
+  Methods: 
+Class: MissingAPIKeyError
+  Doc: Raised when an API key is missing for a requested provider.
+  Methods: 
+Functions: _resolve_gemini_model, create_chat_model, create_target_adapter
+
+--- core\llm_resolver.py ---
+Functions: resolve_llm, _get_budget, record_budget_call
+
+--- core\llm_router.py ---
+Functions: _resolve_key, get_api_key, get_backup_attacker_key, get_groq_key_3, _get_routing_config, _build_llm, get_llm, invalidate_cache, get_model_token_limit, get_node_output_estimate, build_session_llm_config
+
+--- core\logger.py ---
+
+--- core\paths.py ---
+
+--- core\self_correction.py ---
+Class: CorrectionState
+  Methods: 
+Functions: build_self_correction_graph
+
+--- core\session_factory.py ---
+Class: SessionLLMFactory
+  Doc: Unified LLM Factory. 
+Accepts explicit overrides (e.g. from API request kwargs), falls back to 
+envi
+  Methods: __init__, _build_model_safe, _auto_detect_provider_and_build, build
+
+--- core\state.py ---
+Class: AuditorState
+  Doc: Shared state object passed between every node in the PromptEvo graph.
+
+Design Principles
+───────────
+  Methods: 
+Functions: bounded_messages_reducer, bounded_protected_blocks_reducer, _make_bounded_list_reducer, _merge_dict_reducer, _make_replace_bounded_reducer, _ga_state_reducer, _merge_branches_by_id_reducer, new_branch, default_state, validate_state_keys, validate_state_update_safe, validate_state_update
+
+--- core\token_governor.py ---
+Class: TokenBudgetReport
+  Doc: Structured audit record for one Token Governor gate call.
+
+Emitted after every gate() call regardles
+  Methods: __post_init__, log
+Class: TokenGoverned
+  Doc: Wraps a BaseChatModel to automatically apply the Token Governor.
+
+Usage::
+
+    from core.token_gover
+  Methods: __init__, invoke, __getattr__
+Functions: gate
+
+--- core\turn_record.py ---
+Class: TurnRecord
+  Doc: Compressed record of one Scout → Target → Judge cycle.
+
+Design constraint: ``to_context_string()`` o
+  Methods: to_context_string, to_dict, from_dict, make_fallback
+Functions: build_episodic_brief
+
+--- core\types.py ---
+Class: AttackStrategySchema
+  Methods: 
+Class: BranchDict
+  Methods: 
+Class: BranchEvalInput
+  Methods: 
+Class: BranchResult
+  Methods: 
+Class: ReflexionRationaleDict
+  Methods: 
+Class: PrometheusOutput
+  Methods: 
+Class: AnalystDecision
+  Methods: 
+Class: ClassifierVerdict
+  Methods: 
+Class: DefenseFingerprint
+  Methods: 
+Class: AttackPlan
+  Methods: 
+Class: CurriculumStage
+  Methods: 
+Class: SessionResearchRecord
+  Methods: 
+Class: AttackStrategySchema
+  Doc: Lightweight, measurable strategy constraint schema for the GA.
+
+Constrains the *reasoning structure*
+  Methods: persona_must_be_allowed, deduplicate_constraints
+Class: FailureClassification
+  Doc: Structured outcome of the heuristic failure classifier.
+  Methods: 
+Class: GAIndividual
+  Methods: 
+Class: GAStateDict
+  Methods: 
+Functions: compute_strategy_hash
+
+--- core\utils.py ---
+Functions: extract_text
+
+--- core\__init__.py ---
+
+--- agents\analyst.py ---
+Functions: _invoke_with_gemini_fallback, _calculate_cooperation_score, _calculate_rapport_score, _calculate_compliance_score, _calculate_constraint_relaxation_score, _get_last_assistant_text, _apply_phase1_pruning, _apply_phase2_pruning, _rotate_pap_technique, _extract_tltm_recommendation, _format_guardrail_profile, _suggest_route, _semantic_alignment_score, _build_crescendo_plan, _grooming_critic_call, analyst_node
+
+--- agents\combiner.py ---
+Functions: _format_sub_answers, _validate_synthesis, combiner_node
+
+--- agents\decomposer.py ---
+Functions: _extract_questions_from_list, _parse_llm_response, _validate_questions, decomposer_node
+
+--- agents\gci.py ---
+Functions: _classify_objective, _construct_scenario, _verify_deadlock, gci_node
+
+--- agents\hive_mind.py ---
+Functions: _get_obfuscation_tier, _apply_obfuscation, _apply_base64_obfuscation, _apply_scatter_obfuscation, _apply_wordmap_obfuscation, _craft_dci_query, _execute_dci_search, get_search_context, _apply_pap_frame, _select_illusion_scenario, _apply_code_illusion, _build_payload_without_llm, _get_domain_label, _parse_payload_variants, _classify_last_response, _extract_reflexive_hook, _build_reflexive_payload, _role_gradualism_payload, _evolutionary_mutation_synthesizer, attack_swarm_node, _build_crescendo_turn
+
+--- agents\red_debate_swarm.py ---
+Functions: _parse_attacker_response, _parse_defender_response, _format_strategy_memory, _format_branch_texts, build_attacker_prompt, build_defender_prompt, build_judge_prompt, red_debate_swarm_node
+
+--- agents\rmce.py ---
+Functions: _extract_safety_triggers, _build_turn1_prompt, _build_turn2_prompt, _extract_hypothetical_content, _build_turn3_prompt, _get_last_assistant_text, rmce_node
+
+--- agents\scout.py ---
+Functions: _invoke_with_gemini_fallback, classify_objective, _extract_domain_hint, _score_response_cooperativeness, _check_objective_alignment, _check_cover_integrity, _ucb_strategy_selection, _generate_persona, _build_grooming_probe, _extract_key_phrases, scout_node
+
+--- agents\self_referee.py ---
+Functions: _classify_objective_domain, _build_meta_query, _extract_probe_heuristic, _extract_probe, self_referee_node
+
+--- agents\target.py ---
+Class: TargetCircuitBreaker
+  Doc: Count consecutive hard failures against the target API.
+
+Trips after ``threshold`` consecutive error
+  Methods: __init__, record_failure, record_success, is_tripped, reset, consecutive_failures
+Functions: _resolve_adapter, _maybe_compress, _enforce_token_ceiling, target_node, _invoke_native
+
+--- agents\__init__.py ---
+
+--- memory\experience_pool.py ---
+Functions: _get_last_payload, _get_last_target_response, _get_obfuscation_tier, _build_record, reflective_experience_pool_node
+
+--- memory\gltm.py ---
+Class: PatchRecord
+  Doc: A single defensive patch record stored in the GLTM.
+
+Attributes
+──────────
+patch_id : str
+    Short 
+  Methods: __post_init__
+Class: GLTMStore
+  Doc: Persistent YAML-backed guardrail patch store.
+
+Parameters
+──────────
+gltm_path : str | Path
+    Path
+  Methods: __init__, _load, _save, save_patch, get_patches_for_model, get_guardrail_profile, get_patch_by_id, total_patches, export_patches_for_report
+Functions: _objective_tokens, _filter_records_for_objective, _get_store, save_patch, get_guardrail_profile, get_patches_for_model, save_defense_profile, get_defense_profile
+
+--- memory\stm.py ---
+Class: MessageClass
+  Doc: Classification of a single message by SIP policy.
+  Methods: 
+Class: CompressionResult
+  Doc: Full audit record of a single STM compression cycle.
+  Methods: 
+Functions: estimate_tokens, estimate_message_tokens, total_context_tokens, _message_text, _is_protected, _is_compressible_filler, classify_messages, _extract_protected_block_messages, _strip_immutable_tags, _format_messages_for_summariser, _invoke_summariser, _reconstruct_messages, compress_context, stm_compression_node, get_context_report
+
+--- memory\threat_graph.py ---
+Class: ThreatMemoryGraph
+  Methods: __init__, upsert_session, upsert_attempt, record_block, get_weakest_mechanisms, get_failed_strategies, get_best_techniques_against, get_technique_stats, get_successful_strategies, save
+Functions: get_threat_graph
+
+--- memory\threat_intel.py ---
+Functions: retrieve_target_intel, _format_intel, store_target_intel, _build_structured_payload, _build_fallback_payload
+
+--- memory\tltm.py ---
+Class: EmbeddingBackend
+  Doc: Selects the embedding model used to vectorise payloads.
+  Methods: 
+Class: ExperienceRecord
+  Doc: A single stored attack experience in the TLTM.
+
+Attributes
+──────────
+record_id : str
+    SHA-256 he
+  Methods: __post_init__, age_days, decay_weight, normalised_rahs
+Class: EmbeddingEngine
+  Doc: Lightweight wrapper that produces L2-normalised embeddings.
+
+Supports multiple backends with automat
+  Methods: __init__, embed, embed_batch, _embed_openai, _embed_local, _l2_normalize
+Class: TLTMStore
+  Doc: Persistent FAISS vector store for attack experience records.
+
+Each target model gets its own index f
+  Methods: __init__, _index_path, _meta_path, _load_or_create, _save, store_experience, retrieve_ucb_sampled_tactics, get_stats, index_size
+Functions: ucb_score, _store_session_record, store_partial_session, get_default_store
+
+--- memory\turn_summarizer.py ---
+Functions: summarize_turn, _get_summariser_llm, _parse_json, _validate_response_class
+
+--- memory\__init__.py ---
+
+--- intelligence\adaptive_controller.py ---
+Class: AdaptiveExplorationController
+  Doc: Manages the 'exploration_rate' (mutation intensity) and 
+'selection_temperature' (softmax greediness
+  Methods: __init__, update_state, get_state_dict
+
+--- intelligence\arbitrator.py ---
+Functions: _score_defense_hardness, arbitrate_route
+
+--- intelligence\campaign_memory.py ---
+Class: StrategyMemoryStats
+  Methods: 
+Functions: update_strategy_memory
+
+--- intelligence\curriculum_planner.py ---
+Class: CurriculumPlanner
+  Methods: __init__, build_plan, get_current_stage_info, evaluate_stage_progression, get_recommended_tactic
+Functions: curriculum_to_crescendo_steps
+
+--- intelligence\defense_fingerprinter.py ---
+Class: DefenseFingerprinter
+  Methods: compute, infer_defense_mechanisms
+Functions: empty_fingerprint, _infer_refusal_style, infer_defense_mechanisms, _compute_alignment_score, _extract_vulnerabilities, _persona_susceptibility, _context_window_sensitivity, _injection_resistance, _compute_confidence, update_fingerprint_from_response, build_defense_fingerprint, merge_fingerprint_into_profile
+
+--- intelligence\evidence_extractor.py ---
+Functions: _categorize_objective, extract_evidence
+
+--- intelligence\failure_classifier.py ---
+Functions: classify_failure, is_signal_reliable, _primary_mechanism, _build_result
+
+--- intelligence\genetic_algorithm.py ---
+Functions: calculate_fitness, initialize_population, select_parents, crossover, mutate, evolve_generation, ga_init_node, ga_evolve_node, ga_record_score_node
+
+--- intelligence\genetic_operators.py ---
+Functions: mutate_schema, crossover_schema
+
+--- intelligence\genetic_selection.py ---
+Functions: jaccard_similarity, compute_distance, select_parents
+
+--- intelligence\judge_ensemble.py ---
+Class: JudgeEnsemble
+  Methods: __init__, evaluate_turn
+
+--- intelligence\pattern_miner.py ---
+Class: PatternMiner
+  Methods: __init__, mine_failures, mine_successes, mine_session, _write_yaml_safe
+
+--- intelligence\payload_generator.py ---
+Functions: generate_payload, compute_objective_hash, get_cached_or_generate_payload
+
+--- intelligence\rag_attack_planner.py ---
+Class: RagAttackPlanner
+  Methods: compute_expected_probability, calculate_confidence, rank_candidate_techniques, build_attack_plan
+Functions: _beta_success_rate, _load_mined_failures, _load_mined_patterns, build_graph_retrieval_context, _score_route, generate_attack_plan
+
+--- intelligence\state_migration.py ---
+Functions: migrate_legacy_state
+
+--- intelligence\__init__.py ---
+
+--- evaluators\evidence_grounding_validator.py ---
+Functions: _parse_egv_verdict, validate_evidence_grounding, build_egv_failure_feedback
+
+--- evaluators\judge_ensemble.py ---
+Functions: _load_prompt, _extract_score, _run_specialized_judge, aggregate_scores, compute_agreement_rate, judge_ensemble_node
+
+--- evaluators\off_topic_filter.py ---
+Functions: _classify_domain, _tier3_domain_score, _tokenize, _expand_objective_terms, _tier2_jaccard_score, _parse_llm_verdict, _tier1_llm_score, _fuse_scores, score_off_topic_similarity, evaluate_and_annotate_branches, off_topic_filter_node
+
+--- evaluators\prometheus.py ---
+Class: ReflexionRationale
+  Doc: Structured output parsed from the Prometheus Judge's response.
+
+Fields mirror the three-section temp
+  Methods: 
+Functions: _is_transient_judge_error, _compute_judge_backoff, _detect_placeholder_data, sanitize_target_response, _build_reference_answer, _build_rubric, parse_reflexion_rationale, _format_latest_feedback, prometheus_judge_node
+
+--- evaluators\rahs_scorer.py ---
+Class: OperationalSeverity
+  Doc: RAHS three-tier operational severity classification.
+  Methods: 
+Class: DomainRiskCategory
+  Doc: Domain taxonomy for regulated-environment risk multipliers.
+  Methods: 
+Class: RAHSResult
+  Doc: Complete output of a single RAHS scoring calculation.
+
+All intermediate component values are preserv
+  Methods: 
+Functions: compute_base_score, determine_operational_severity, compute_disclaimer_discount, compute_judge_entropy_penalty, compute_turn_penalty, classify_domain, _severity_band, _detect_safe_alternative, calculate_rahs, rahs_scorer_node
+
+--- evaluators\response_classifier.py ---
+Functions: _heuristic_classify, _llm_classify, _update_defense_profile, response_classifier_node
+
+--- evaluators\__init__.py ---
+
+--- reporters\pdf_reporter.py ---
+Class: PDFReporter
+  Methods: generate
+Functions: _normalise_message
+
+--- reporters\__init__.py ---
+
+--- hitl\hitl_handler.py ---
+Class: HITLAction
+  Methods: 
+Class: HITLHandler
+  Methods: normalize_action, process
+Functions: _clip, extract_pending_payload, _summarize_attack_plan, _summarize_branches, _build_risk_context, _build_memory_context, _interrupt_value, build_hitl_context
+
+--- hitl\__init__.py ---
+
+--- infra\database.py ---
+Functions: _get_engine, _create_schema, save_audit_report_to_db, list_audit_reports, get_audit_report
+
+--- infra\observability.py ---
+Class: PromptEvoJsonFormatter
+  Doc: Custom JSON log formatter.
+
+Works with or without ``python-json-logger``.  When the library is
+insta
+  Methods: format
+Functions: set_session_context, set_node_context, clear_session_context, get_session_metrics, bind_session_metrics, _get_ctx, configure_logging, logged_node, emit_session_complete, get_observability_status
+
+--- infra\persistence.py ---
+Class: _SqliteWriteBatcher
+  Doc: Background-thread write batcher for the SQLite fallback store.
+
+Design
+──────
+• The caller thread do
+  Methods: __init__, schedule, flush, flush_sync, _get_conn, _drain, _run
+Class: AuditStore
+  Doc: Thread-safe, Redis-backed session store with in-process + SQLite fallback.
+
+Interface intentionally 
+  Methods: __init__, _shutdown_batcher, _load_from_sqlite, _schedule_sqlite, _k, create_session, session_exists, is_running, set_running, append_event, get_events, event_count, set_final_state, get_final_state, set_error, get_error, set_status, get_status, set_report, get_report, set_request, get_request, set_started_at, get_started_at, set_latest_delta, get_latest_delta, set_hitl, get_hitl, clear_hitl, push_hitl_decision, poll_hitl_decision, list_sessions, _scan_session_set, _cursor_scan_meta_keys, get_dashboard_state
+Functions: _json_fallback, _json_object_hook, _json_loads, _probe_redis, _close_sqlite_conn, build_checkpointer, get_audit_store
+
+--- infra\security.py ---
+Class: AuditMiddleware
+  Doc: ASGI middleware that emits a structured access log for every request.
+
+Log fields (queryable in SIEM
+  Methods: __init__
+Functions: _log_startup_security_state, _looks_like_placeholder_secret, verify_startup_secrets, _set_health_probe_results, get_health_probe_results, probe_provider_connectivity, _constant_time_compare, validate_target_model, get_allowed_models
+
+--- remediation\guardrails.py ---
+
+--- remediation\patch_generator.py ---
+Functions: _classify_attack_vector, build_patch_from_template, _parse_patch_sentences, patch_generator_node
+
+--- remediation\__init__.py ---
+
+--- adapters\base_adapter.py ---
+Class: AdapterError
+  Doc: Base exception for all adapter-layer failures.
+  Methods: 
+Class: AdapterRateLimitError
+  Doc: The target API returned a rate-limit (429) or quota-exceeded response.
+
+Raised by concrete adapters 
+  Methods: __init__
+Class: AdapterTimeoutError
+  Doc: The target API did not respond within the configured timeout.
+  Methods: 
+Class: AdapterAuthError
+  Doc: Authentication failed (invalid API key, expired token, etc.).
+
+This error is treated as a hard, non-
+  Methods: 
+Class: AdapterContextLengthError
+  Doc: The prompt exceeded the target model's context window limit.
+  Methods: 
+Class: AdapterContentFilterError
+  Doc: The target's built-in content filter blocked the response.
+
+Distinct from a refusal: the model never
+  Methods: 
+Class: AdapterResponse
+  Doc: Structured response envelope returned by every adapter.
+
+Wraps the raw response string with metadata
+  Methods: __init__, __repr__
+Class: BaseTargetAdapter
+  Doc: Abstract vendor-agnostic interface for all target LLM adapters.
+
+All concrete adapters inherit from 
+  Methods: __init__, invoke_full, get_model_id, invoke, capabilities, __repr__
+Class: MockTargetAdapter
+  Doc: Fully deterministic in-memory adapter for unit tests and CI pipelines.
+
+Responses are controlled via
+  Methods: __init__, invoke_full, get_model_id
+
+--- adapters\langchain_adapter.py ---
+Class: LangChainTargetAdapter
+  Doc: Target adapter wrapping any LangChain ``BaseChatModel``.
+
+Parameters
+──────────
+model : BaseChatMode
+  Methods: __init__, _single_invoke, invoke_full, get_model_id, capabilities, __repr__
+Functions: _classify_error, _extract_usage, _extract_finish_reason
+
+--- adapters\multimodal_adapter.py ---
+
+--- adapters\ollama_adapter.py ---
+Class: OllamaTargetAdapter
+  Doc: Target adapter that communicates with a local Ollama instance via HTTP.
+
+Uses the Ollama ``/api/chat
+  Methods: __init__, get_model_id, capabilities, _check_ollama_available, invoke_full, __repr__
+Functions: _format_messages_for_ollama
+
+--- adapters\__init__.py ---
+

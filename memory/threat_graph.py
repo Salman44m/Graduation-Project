@@ -6,6 +6,7 @@ Persists per-target Defense Mechanisms and Attack Technique edges.
 import json
 import logging
 from pathlib import Path
+from typing import Any
 import networkx as nx
 
 logger = logging.getLogger(__name__)
@@ -164,6 +165,84 @@ class ThreatMemoryGraph:
         except Exception:
             return []
 
+    def get_technique_stats(self) -> dict[str, dict[str, float]]:
+        """Return historical success probability per technique per mechanism.
+
+        Output schema matches what ``generate_attack_plan()`` / ``_score_route()``
+        expect for ``technique_stats``:
+
+        .. code-block:: python
+
+            {
+                "attack_swarm": {"rlhf_refusal": 0.75, "policy_filter": 0.40},
+                "gci":          {"rlhf_refusal": 0.20},
+                ...
+            }
+
+        P(success) is estimated as:
+            bypassed_count / (bypassed_count + blocked_count)
+        using additive smoothing (Laplace, alpha=1) so new techniques start at 0.5
+        rather than being undefined.
+
+        Never raises.
+        """
+        try:
+            stats: dict[str, dict[str, float]] = {}
+            for src, dst, data in self.graph.edges(data=True):
+                edge_type = data.get("type", "")
+                count = int(data.get("count", 1))
+                if edge_type not in ("BYPASSED_BY", "BLOCKED_BY"):
+                    continue
+                technique_id = src
+                mechanism_id = dst
+                entry = stats.setdefault(technique_id, {})
+                if mechanism_id not in entry:
+                    entry[mechanism_id] = {"bypassed": 0, "blocked": 0}
+                if edge_type == "BYPASSED_BY":
+                    entry[mechanism_id]["bypassed"] += count  # type: ignore[assignment]
+                else:
+                    entry[mechanism_id]["blocked"] += count   # type: ignore[assignment]
+
+            # Convert raw counts to P(success) using Laplace smoothing (alpha=1)
+            result: dict[str, dict[str, float]] = {}
+            for technique, mechs in stats.items():
+                result[technique] = {}
+                for mech, counts in mechs.items():
+                    b = counts["bypassed"]  # type: ignore[index]
+                    bl = counts["blocked"]  # type: ignore[index]
+                    result[technique][mech] = (b + 1) / (b + bl + 2)
+            return result
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[ThreatGraph] get_technique_stats failed: %s", exc)
+            return {}
+
+    def get_successful_strategies(self, mechanism_ids: list[str], k: int = 5) -> list[dict[str, Any]]:
+        """Return top-k AttackTechniques that successfully bypassed the given mechanisms.
+
+        Mirrors ``get_failed_strategies()`` but traverses BYPASSED_BY edges.
+        Returns list of dicts: {technique, mechanism, count, avg_turn}.
+        Never raises.
+        """
+        try:
+            successful: list[dict[str, Any]] = []
+            for mech in mechanism_ids:
+                if not self.graph.has_node(mech):
+                    continue
+                for pred in self.graph.predecessors(mech):
+                    for key, data in self.graph[pred][mech].items():
+                        if data.get("type") == "BYPASSED_BY":
+                            successful.append({
+                                "technique": pred,
+                                "mechanism": mech,
+                                "count": data.get("count", 0),
+                                "avg_turn": data.get("avg_turn", 0.0),
+                            })
+            successful.sort(key=lambda x: x["count"], reverse=True)
+            return successful[:k]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[ThreatGraph] get_successful_strategies failed: %s", exc)
+            return []
+
     def save(self):
         try:
             data = nx.node_link_data(self.graph, edges="links")
@@ -171,3 +250,15 @@ class ThreatMemoryGraph:
                 json.dump(data, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save threat graph for {self.target_id}: {e}")
+
+
+# ── Module-level factory ─────────────────────────────────────────────────────
+
+def get_threat_graph(target_id: str) -> ThreatMemoryGraph:
+    """Return a ``ThreatMemoryGraph`` for *target_id*.
+
+    This is the factory function imported by
+    ``intelligence.rag_attack_planner.build_graph_retrieval_context``.
+    Raising is intentional: callers are expected to wrap in try/except.
+    """
+    return ThreatMemoryGraph(target_id=target_id)
